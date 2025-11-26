@@ -1,0 +1,134 @@
+RoadMap for NovaDCC
+
+Snapshot — where we are now (status)
+
+- Project scaffold and build: `CMakeLists.txt` configured, vcpkg bootstrapped into `external/vcpkg`, configured for x86 (Win32). `NovaDCC.exe` builds successfully.
+- Runtime: post-build DLL copying added (or available) so executable runs without manual DLL movement.
+- Prototype app (`src/main.cpp`): ImGui dockspace, viewport, grid, cube, orbit camera — runs on Win32.
+- Tooling: vcpkg used for dependencies (`glfw`, `glad`, `imgui`, `glm`). Doxygen is present but `Doxyfile` has obsolete tags (warnings).
+- Macro warnings fixed by defining ImGui loader to GLAD.
+
+High-level project roadmap (milestones)
+
+Milestone 0 — Prototype (COMPLETE)
+Deliverable: runnable NovaDCC prototype (ImGui + viewport + cube)
+
+Milestone 1 — Editor core & scene model (Next priority)
+Deliverables:
+- Scene/Entity system (scene graph or flat entity list)
+- Primitive factory (cube/sphere/cylinder/plane)
+- Selection, transform gizmo (translate/rotate/scale)
+- UI controls wired to create/select/delete objects
+- Basic camera controls (orbit/pan/zoom) robust
+Why: makes UI meaningful — clicking “Cube” spawns objects you can manipulate
+
+Milestone 2 — Asset pipeline & importers
+Deliverables:
+- Import OBJ / glTF (tinyobj/tinygltf)
+- Asset browser UI, drag/drop preview
+- Asset-to-scene instantiation
+Why: real assets allow real editing workflows
+
+Milestone 3 — Rendering improvements
+Deliverables:
+- PBR shader path, directional lighting, environment maps
+- Offscreen framebuffer for viewport, MSAA, post-process (exposure/gamma)
+Why: better visuals for real asset inspection
+
+Milestone 4 — Editor UX & tools
+Deliverables:
+- Transform gizmo improvements (snap, local/global)
+- Scene hierarchy panel, inspector panel (material/mesh/transform)
+- Undo/Redo, copy/paste
+Why: basic editor UX; makes the tool usable for iterative editing
+
+Milestone 5 — Serialization, export & plugins
+Deliverables:
+- Scene save/load (JSON/binary)
+- Exporters (glTF), plugin API (simple)
+Why: persistence and interop with other tools
+
+Milestone 6 — CI, packaging & multi-platform
+Deliverables:
+- CI pipeline (Windows x86, Windows x64, Linux, macOS)
+- Automated packaging (zip / installer)
+- Release process and versioning
+Why: reproducible builds and distribution
+
+Milestone 7 — Polishing, tests & docs
+Deliverables:
+- Unit tests for core systems
+- Integration tests (build/run)
+- Clean Doxygen/README and user guide
+Why: maintainability and onboarding
+
+Rough effort estimates (rough, per milestone)
+
+- M1 (Editor core): 1–3 weeks (small team / single dev)
+- M2 (Importers): 1–2 weeks
+- M3 (Renderer): 2–4 weeks
+- M4 (UX/tools): 2–3 weeks
+- M5 (Serialization/plugins): 1–2 weeks
+- M6 (CI/packaging): 1–2 weeks
+- M7 (Polish & docs): ongoing, 1–2 weeks major push
+
+Top recommendations — prioritized (what to do next)
+
+1) (Highest) Implement Scene/Entity + Primitive Factory + wire “Cube” button
+- Why: turns UI into interactive editor; unlocks higher level features.
+- Quick win: create `src/scene.h`/`src/scene.cpp`, `src/primitive_factory.h`/`src/primitive_factory.cpp`, update `src/main.cpp` to show objects and selection.
+- I can generate these files and CMake edits now.
+
+2) Stabilize build/runtime automation & CI basics
+- Ensure the Win32 build is reproducible, add a small GitHub Actions template for Windows x86 build using vcpkg toolchain.
+- Add post-build copy of runtime DLLs (already present — verify).
+- Why: avoids “works on my machine” delays and makes builds repeatable.
+
+3) Add Undo/Redo skeleton and selection/gizmo basics
+- Even a simple command stack (push operations) will pay off when making editing actions reversible.
+
+4) Add Asset import (OBJ/glTF) using vcpkg tinyobj/tinygltf
+- Wire an "Import" dialog in the Assets panel that loads a mesh and creates an instance.
+
+5) Tidy documentation and tooling
+- Fix Doxyfile (run `doxygen -u Doxyfile` or remove obsolete tags) and add a README with build/run dev steps for Win32.
+- Add a small `CONTRIBUTING.md` and dev setup checklist (Visual Studio components, vcpkg steps).
+
+6) Improve renderer (PBR) and add frame capture / screenshot
+- After scene and import are working; improves usability for artists.
+
+7) Cross-platform testing and packaging
+- Add CI on Windows/Linux/macOS to validate cross-platform portability.
+
+Immediate actionable steps (do these now)
+
+Primary path (Scene + primitive button):
+- Add files: `src/scene.h`, `src/scene.cpp`, `src/primitive_factory.h`, `src/primitive_factory.cpp`.
+- Update `src/main.cpp` to include the scene and to spawn a cube when the “Cube” ImGui button is pressed.
+- Edit `CMakeLists.txt` to include the new sources.
+- Provide a test plan to validate (build & run, press Cube, select object, move).
+
+Tooling-first path (stabilize tooling):
+- Fix Doxygen warnings: run in `docs` folder: `doxygen -u Doxyfile` OR run PowerShell to remove obsolete tags.
+- Add small GitHub Actions file (I can produce) that checks out code, bootstraps vcpkg, installs the x86 triplet ports, configures & builds.
+
+How I recommend you prioritize (short summary)
+
+- Scene + primitives + selection/gizmo (M1) — makes the editor actually useful.
+- Add Undo/Redo + basic serialization skeleton — avoids data loss and enables iterative development.
+- Asset import (M2) — get real models into the scene.
+- Renderer improvements (M3) — once assets are importable, visuals matter.
+- CI, packaging, docs (M6/M7) — make the project reproducible and shareable.
+
+Git & workflow suggestions
+
+- Create branch: `feature/scene-system` and open small PRs per focused change.
+- Use small commits and descriptive PR titles (e.g., "feat(scene): add scene and primitive factory").
+- Tag milestones in issues: create GitHub issues for each milestone task, break into subtasks.
+
+Next explicit actions — choose one:
+A) Generate the scene + primitive factory files and CMake updates now (I’ll produce the exact contents and file blocks),
+B) Produce a GitHub Actions CI workflow to validate Win32 x86 builds using vcpkg, or
+C) Update the Doxyfile and README for dev setup
+
+Please reply with A, B or C to proceed.

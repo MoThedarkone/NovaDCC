@@ -1,0 +1,36 @@
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+build/
+bin/
+Debug/
+Release/
+*.exe
+*.dll
+*.obj
+*.pdb
+*.ilk
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# IDE
+.vscode/
+
+# Third-party
+external/vcpkg/packages/
+
+# Mac/Unix
+.DS_Store
+
+# Logs
+*.log

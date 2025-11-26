@@ -1,0 +1,28 @@
+# Minimal Doxyfile for NovaDCC - avoids deprecated/obsolete tags
+DOXYFILE_ENCODING      = UTF-8
+PROJECT_NAME           = "NovaDCC"
+PROJECT_NUMBER         = 
+OUTPUT_DIRECTORY       = docs
+CREATE_SUBDIRS         = NO
+INPUT                  = src external
+FILE_PATTERNS          = *.c *.cc *.cpp *.cxx *.h *.hpp *.inl *.dox
+RECURSIVE              = YES
+EXCLUDE                = 
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_RTF           = NO
+GENERATE_XML           = NO
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+EXTRACT_ALL            = YES
+FULL_PATH_NAMES        = NO
+GENERATE_TREEVIEW      = NO
+HAVE_DOT               = NO
+
+# Notes:
+# - Obsolete tags such as HTML_TIMESTAMP, FORMULA_TRANSPARENT, CLASS_DIAGRAMS,
+#   DOT_FONTNAME, DOT_FONTSIZE, DOT_TRANSPARENT are intentionally omitted.
+# - Adjust INPUT and other settings as needed for your documentation scope.
