@@ -4,46 +4,28 @@ Completed (removed from active list):
 - Cube implemented (`src/primitive_factory.*`).
 - Selection implemented (`Scene::selectEntity`, `Scene::getSelectedId`, entity listing UI).
 - Translation gizmo implemented (`Gizmo::translationWidget` and onscreen drag in `gizmo_draw.cpp`).
+- ImGuizmo integrated and `GizmoController` added (`src/gizmo_controller.*`) — works with offscreen FBO and fallback.
+- Transform gizmo (translate/rotate/scale) wired to scene transforms and undo/redo via `Scene::TransformCommand` push on manipulation end.
 - UI controls for create/select/delete wired (Cube button, Delete button, entity list selection).
-- Basic camera controls (orbit/pan/zoom) implemented in `src/main.cpp`.
+- Tools UI moved out of `main.cpp` to `src/tools_window.*` and pin helper moved to `src/ui_helpers.*`.
+- Basic camera controls (orbit/pan/zoom) implemented and `Camera` integration present.
 
 Active remaining tasks:
 - Primitive factory: implement `sphere`, `cylinder`, `plane` in `src/primitive_factory.*`.
-- Transform gizmo: implement `rotate` and `scale` operations (ImGuizmo integration or extend `gizmo_draw.cpp`).
-- Wire transform gizmo changes to push `Scene::Command` instances for undo/redo (skeleton exists in `scene.h`).
 
 Recommendations / next steps:
-- Implement other primitive generators (`sphere`, `cylinder`, `plane`).
-- Extend gizmo to support `rotate` and `scale` and ensure pivot/mode behavior matches expectations.
-- Hook transform changes into the `Scene` command/undo system for undo/redo support.
+- Remove temporary debug prints (e.g. in `src/gizmo_controller.cpp`).
+- Compute mesh bounds and tighten `Renderer::drawSelectionBox` to use real mesh AABB.
+- Extract other UI windows (Assets/Bottom/Viewport) into `src/ui/` files for clarity.
+- Add a resource manager for shaders/textures and a small Undo/Command module if needed.
+- Optionally add `animator.h`/`animator.cpp` skeleton for future animation work.
 
-Refactor / Organization Plan (to avoid a large `main.cpp`)
+Refactor / Organization Plan (status)
+- Step A (renderer): partially done — `Renderer` exists and is used from `main.cpp`.
+- Step B (camera): camera code is present; consider moving more input handling into `camera.*`.
+- Step C (gizmo_controller): implemented and working.
+- Step D (animator): not yet implemented.
 
-Goal: split `main.cpp` responsibilities into focused modules so the codebase is easier to navigate and maintain.
-
-Proposed new modules (files to create under `src/`):
-- `renderer.h` / `renderer.cpp`
-  - Responsibility: OpenGL resources, shader compilation, draw helpers (grid, origin marker, selection box, axis lines), and exposing a program handle for scene rendering.
-  - API: `Renderer::init()`, `Renderer::resize(int w,int h)`, `Renderer::renderScene(const Scene&, const glm::mat4& vp, bool wireframe)`, `Renderer::getProgram()`.
-
-- `camera.h` / `camera.cpp`
-  - Responsibility: orbit/pan/zoom state and input handling, provide `view()` and `projection(aspect)` helpers.
-  - API: `Camera::getView()`, `Camera::getProjection(float aspect)`, `Camera::onScroll(double)`, `Camera::onMouseDrag(...)`.
-
-- `gizmo_controller.h` / `gizmo_controller.cpp`
-  - Responsibility: ImGuizmo integration and coordinate mapping (FBO vs ImGui), SetRect/SetDrawlist calls, handling manipulate begin/end and pushing `Scene::TransformCommand` for undo/redo.
-  - API: `GizmoController::beginFrame()`, `GizmoController::manipulate(Scene&, const glm::mat4& view, const glm::mat4& proj, const ImVec2& vp_pos, const ImVec2& vp_size)`.
-
-- `animator.h` / `animator.cpp` (skeleton)
-  - Responsibility: future animation system; provide tick/update API and storage for active animations.
-  - API: `Animator::update(float dt)`.
-
-Refactor approach (incremental and safe):
-- Step A: Implement `renderer` and move drawing helper functions (compile/createProgram optional) into it. Update `main.cpp` to call `Renderer::init()` and use its `renderScene` and program. Build and test.
-- Step B: Implement `camera` and move camera math + input handling. Replace main's camera code with `Camera` calls. Build and test.
-- Step C: Implement `gizmo_controller` and move ImGuizmo logic (SetRect, Manipulate, ViewManipulate) into it. Wire undo/redo via `Scene::pushCommand`. Build and test.
-- Step D: Add `animator` skeleton and move any animation-related code into it.
-
-CMake note: current CMakeLists uses `file(GLOB_RECURSE ${CMAKE_SOURCE_DIR}/src/*.cpp)` so adding new `.cpp` files under `src/` will be included automatically — no CMake changes required.
-
-If you want, I will start with Step A now and create `renderer.h`/`renderer.cpp` and integrate into `main.cpp`. Which step should I implement first? (default: Step A - `renderer`).
+Notes:
+- After finishing the primitive generators and any cleanup (debug prints, selection box), run a full build and smoke test.
+- I can remove debug prints and make a cleanup commit; tell me if you want that done now.

@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 // Simple on-screen gizmo: draws 3 axis lines at selected entity position in screen space
 // Handles simple dragging along an axis using mouse delta in screen space projected to world.
@@ -62,6 +63,8 @@ bool Gizmo::drawGizmo(const glm::mat4& vp, const glm::vec2& viewPos, const glm::
     static bool wasDragging = false;
     static Axis dragAxis = Axis::None;
     static glm::vec3 initialPos;
+    static glm::vec3 initialRot;
+    static glm::vec3 initialScale;
     static glm::vec2 startMouse;
 
     auto nearPointDist = [&](const glm::vec3& p)->float{
@@ -82,27 +85,52 @@ bool Gizmo::drawGizmo(const glm::mat4& vp, const glm::vec2& viewPos, const glm::
             else dragAxis = Axis::Z;
             wasDragging = true;
             initialPos = ent->position;
+            initialRot = ent->rotation;
+            initialScale = ent->scale;
             startMouse = mpos;
             dragging_ = true;
         }
     }
 
     if(wasDragging && !mouseDown) {
+        // commit change based on current operation
         wasDragging = false;
-        dragAxis = Axis::None;
         dragging_ = false;
+        // push undo command
+        Scene::Transform before; before.position = initialPos; before.rotation = initialRot; before.scale = initialScale;
+        Scene::Transform after; after.position = ent->position; after.rotation = ent->rotation; after.scale = ent->scale;
+        scene.pushCommand(std::unique_ptr<Scene::Command>(new Scene::TransformCommand(sel, before, after)));
+        dragAxis = Axis::None;
         return true; // committed change
     }
 
     if(wasDragging && mouseDown) {
-        // compute mouse delta and move entity along camera-projected axis
+        // compute mouse delta and modify based on operation type
         glm::vec2 delta = mpos - startMouse;
         float moveScale = 0.01f * (/*scale with view size*/ (viewSize.y));
-        glm::vec3 newPos = initialPos;
-        if(dragAxis == Axis::X) newPos.x = initialPos.x + delta.x * moveScale;
-        if(dragAxis == Axis::Y) newPos.y = initialPos.y - delta.y * moveScale;
-        if(dragAxis == Axis::Z) newPos.z = initialPos.z + (delta.x - delta.y) * 0.01f;
-        ent->position = newPos;
+        float rotScale = 0.3f; // degrees per pixel
+        float scaleScale = 0.005f; // scale factor per pixel
+
+        if(op_ == Operation::Translate) {
+            glm::vec3 newPos = initialPos;
+            if(dragAxis == Axis::X) newPos.x = initialPos.x + delta.x * moveScale;
+            if(dragAxis == Axis::Y) newPos.y = initialPos.y - delta.y * moveScale;
+            if(dragAxis == Axis::Z) newPos.z = initialPos.z + (delta.x - delta.y) * 0.01f;
+            ent->position = newPos;
+        } else if(op_ == Operation::Rotate) {
+            // Simple rotation: mouse X affects rotation around Y, mouse Y affects rotation around X
+            glm::vec3 newRot = initialRot;
+            if(dragAxis == Axis::X) newRot.x = initialRot.x + delta.y * rotScale;
+            if(dragAxis == Axis::Y) newRot.y = initialRot.y + delta.x * rotScale;
+            if(dragAxis == Axis::Z) newRot.z = initialRot.z + (delta.x - delta.y) * rotScale;
+            ent->rotation = newRot;
+        } else if(op_ == Operation::Scale) {
+            glm::vec3 newScale = initialScale;
+            if(dragAxis == Axis::X) newScale.x = std::max(0.001f, initialScale.x + delta.x * scaleScale);
+            if(dragAxis == Axis::Y) newScale.y = std::max(0.001f, initialScale.y - delta.y * scaleScale);
+            if(dragAxis == Axis::Z) newScale.z = std::max(0.001f, initialScale.z + (delta.x - delta.y) * scaleScale);
+            ent->scale = newScale;
+        }
         return true;
     }
 

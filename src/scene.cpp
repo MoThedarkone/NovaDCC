@@ -33,7 +33,6 @@ int Scene::addPrimitive(primitives::PrimitiveType type, const glm::vec3& pos) {
     m_selectedId = m_entities.back().id;
     // increment spawn counter
     m_spawnCount++;
-    std::cout << "[Scene] spawned total=" << m_spawnCount << "\n";
     return m_selectedId;
 }
 
@@ -42,7 +41,6 @@ int Scene::addCube(const glm::vec3& pos) { return addPrimitive(primitives::Primi
 void Scene::recordSpawnOnly() {
     // increment spawn counter but do not allocate meshes/entities
     m_spawnCount++;
-    std::cout << "[Scene] recorded spawn only, total=" << m_spawnCount << "\n";
 }
 
 void Scene::drawAll(unsigned int prog, const glm::mat4& vp) const {
