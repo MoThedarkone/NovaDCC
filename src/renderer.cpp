@@ -149,22 +149,44 @@ void drawAxisLines(const glm::mat4& vp) {
 
 void drawSelectionBox(const glm::mat4& vp, const SceneEntity* ent) {
     if(!ent || !ent->mesh) return;
-    glm::mat4 model = glm::mat4(1.0f); model = glm::translate(model, ent->position); model *= glm::toMat4(glm::quat(glm::radians(ent->rotation))); model = glm::scale(model, ent->scale); glm::mat4 mvp = vp * model;
-    std::vector<float> lines = {
-        -1.0f,-1.0f,-1.0f,  1.0f,-1.0f,-1.0f,
-        1.0f,-1.0f,-1.0f,   1.0f, 1.0f,-1.0f,
-        1.0f, 1.0f,-1.0f,  -1.0f, 1.0f,-1.0f,
-        -1.0f, 1.0f,-1.0f, -1.0f,-1.0f,-1.0f,
-        -1.0f,-1.0f, 1.0f,  1.0f,-1.0f, 1.0f,
-        1.0f,-1.0f, 1.0f,   1.0f, 1.0f, 1.0f,
-        1.0f, 1.0f, 1.0f,  -1.0f, 1.0f, 1.0f,
-        -1.0f, 1.0f, 1.0f, -1.0f,-1.0f, 1.0f,
-        -1.0f,-1.0f,-1.0f, -1.0f,-1.0f, 1.0f,
-        1.0f,-1.0f,-1.0f,  1.0f,-1.0f, 1.0f,
-        1.0f, 1.0f,-1.0f,  1.0f, 1.0f, 1.0f,
-        -1.0f, 1.0f,-1.0f, -1.0f, 1.0f, 1.0f
+    // model transforms entity local-space AABB into world
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::translate(model, ent->position);
+    model *= glm::toMat4(glm::quat(glm::radians(ent->rotation)));
+    model = glm::scale(model, ent->scale);
+    glm::mat4 mvp = vp * model;
+
+    // get local AABB from mesh
+    glm::vec3 mn = ent->mesh->aabbMin;
+    glm::vec3 mx = ent->mesh->aabbMax;
+
+    // compute 8 corners in local space
+    glm::vec3 c[8];
+    c[0] = glm::vec3(mn.x, mn.y, mn.z);
+    c[1] = glm::vec3(mx.x, mn.y, mn.z);
+    c[2] = glm::vec3(mx.x, mx.y, mn.z);
+    c[3] = glm::vec3(mn.x, mx.y, mn.z);
+    c[4] = glm::vec3(mn.x, mn.y, mx.z);
+    c[5] = glm::vec3(mx.x, mn.y, mx.z);
+    c[6] = glm::vec3(mx.x, mx.y, mx.z);
+    c[7] = glm::vec3(mn.x, mx.y, mx.z);
+
+    // transform corners by model matrix to world then project with vp
+    std::vector<float> lines;
+    auto pushLine = [&](const glm::vec3& a, const glm::vec3& b){
+        glm::vec4 aw = model * glm::vec4(a, 1.0f);
+        glm::vec4 bw = model * glm::vec4(b, 1.0f);
+        lines.push_back(aw.x); lines.push_back(aw.y); lines.push_back(aw.z);
+        lines.push_back(bw.x); lines.push_back(bw.y); lines.push_back(bw.z);
     };
-    GLuint tmpVBO=0, tmpVAO=0; glGenBuffers(1,&tmpVBO); glGenVertexArrays(1,&tmpVAO); glBindVertexArray(tmpVAO); glBindBuffer(GL_ARRAY_BUFFER, tmpVBO);
+
+    // edges
+    pushLine(c[0], c[1]); pushLine(c[1], c[2]); pushLine(c[2], c[3]); pushLine(c[3], c[0]);
+    pushLine(c[4], c[5]); pushLine(c[5], c[6]); pushLine(c[6], c[7]); pushLine(c[7], c[4]);
+    pushLine(c[0], c[4]); pushLine(c[1], c[5]); pushLine(c[2], c[6]); pushLine(c[3], c[7]);
+
+    GLuint tmpVBO=0, tmpVAO=0; glGenBuffers(1,&tmpVBO); glGenVertexArrays(1,&tmpVAO);
+    glBindVertexArray(tmpVAO); glBindBuffer(GL_ARRAY_BUFFER, tmpVBO);
     glBufferData(GL_ARRAY_BUFFER, lines.size()*sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(0); glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
     glUseProgram(g_prog); GLint loc = glGetUniformLocation(g_prog, "uMVP"); glUniformMatrix4fv(loc, 1, GL_FALSE, &mvp[0][0]); GLint col = glGetUniformLocation(g_prog, "uColor"); glLineWidth(3.0f); glUniform3f(col, 1.0f, 0.2f, 1.0f); glDrawArrays(GL_LINES, 0, (GLsizei)(lines.size()/3)); glLineWidth(1.0f);

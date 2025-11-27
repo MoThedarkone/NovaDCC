@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <glad/glad.h>
+#include <glm/glm.hpp>
 
 namespace primitives {
 
@@ -13,6 +14,10 @@ struct MeshGL {
     GLuint vbo = 0;
     GLuint ebo = 0;
     int indexCount = 0;
+
+    // Axis-aligned bounding box in mesh/model local space
+    glm::vec3 aabbMin = glm::vec3(-1.0f);
+    glm::vec3 aabbMax = glm::vec3(1.0f);
 
     MeshGL() = default;
     ~MeshGL();
