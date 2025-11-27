@@ -32,18 +32,21 @@
 #include "gui_console.h"
 #include "primitive_factory.h"
 #include "gizmo.h"
+#include "renderer.h"
+#include "camera.h"
+#include "gizmo_controller.h"
 
 static Gizmo g_gizmo;
 
 static int g_window_width = 1280;
 static int g_window_height = 800;
 
-static float g_cameraDistance = 6.0f;
-static glm::vec2 g_cameraAngles = glm::vec2(0.3f, -1.0f); // pitch, yaw
-static glm::vec3 g_cameraTarget = glm::vec3(0.0f);
+// Camera instance
+static Camera g_camera;
 static bool g_mouseMiddleDown = false;
-static glm::vec2 g_lastMousePos(0.0f, 0.0f);
 static bool g_showWireframe = false;
+// Program handle provided by Renderer
+static GLuint g_prog = 0;
 
 // New: numeric widget toggle
 static bool g_showNumericWidgets = false;
@@ -59,6 +62,8 @@ static bool g_showToolOptions = false;
 // Spawn helpers
 static glm::vec2 g_spawnMousePos = glm::vec2(0.0f);
 static bool g_spawnPending = false;
+// Selected primitive type for spawning
+static primitives::PrimitiveType g_spawnType = primitives::PrimitiveType::Cube;
 
 // Pin states for windows (false = unpinned [ ], true = pinned [x])
 static bool g_pinTools = false;
@@ -184,52 +189,6 @@ static bool g_imguizmoActive = false;
 static int g_imguizmoEntity = 0;
 static Scene::Transform g_imguizmoBefore;
 
-// Simple shader helpers
-static GLuint compileShader(GLenum type, const char* src) {
-    GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, nullptr);
-    glCompileShader(s);
-    GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if(!ok){
-        char log[1024]; glGetShaderInfoLog(s, sizeof(log), nullptr, log);
-        std::cerr << "Shader compile error: " << log << '\n';
-    }
-    return s;
-}
-
-static GLuint createProgram(const char* vs, const char* fs) {
-    GLuint vsid = compileShader(GL_VERTEX_SHADER, vs);
-    GLuint fsid = compileShader(GL_FRAGMENT_SHADER, fs);
-    GLuint prog = glCreateProgram();
-    glAttachShader(prog, vsid);
-    glAttachShader(prog, fsid);
-    glLinkProgram(prog);
-    GLint ok = 0; glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if(!ok){
-        char log[1024]; glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
-        std::cerr << "Program link error: " << log << '\n';
-    }
-    glDeleteShader(vsid);
-    glDeleteShader(fsid);
-    return prog;
-}
-
-const char* VS_SIMPLE = R"glsl(
-#version 330 core
-layout(location = 0) in vec3 aPos;
-uniform mat4 uMVP;
-void main(){ gl_Position = uMVP * vec4(aPos,1.0); }
-)glsl";
-
-const char* FS_SIMPLE = R"glsl(
-#version 330 core
-out vec4 FragColor;
-uniform vec3 uColor;
-void main(){ FragColor = vec4(uColor,1.0); }
-)glsl";
-
-static GLuint g_prog = 0;
-
 // Offscreen framebuffer for viewport
 static GLuint g_fbo = 0;
 static GLuint g_fboColor = 0;
@@ -274,356 +233,26 @@ static void createFBO(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-static void drawGrid(const glm::mat4& vp) {
-    std::vector<float> lines;
-    const int half = 20;
-    const float step = 0.5f;
-    for(int i=-half;i<=half;i++){
-        float x = i*step;
-        lines.push_back(x); lines.push_back(0.0f); lines.push_back(-half*step);
-        lines.push_back(x); lines.push_back(0.0f); lines.push_back(half*step);
-        float z = i*step;
-        lines.push_back(-half*step); lines.push_back(0.0f); lines.push_back(z);
-        lines.push_back(half*step);  lines.push_back(0.0f); lines.push_back(z);
-    }
-
-    GLuint tmpVBO=0, tmpVAO=0;
-    glGenBuffers(1, &tmpVBO);
-    glGenVertexArrays(1, &tmpVAO);
-    glBindVertexArray(tmpVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, tmpVBO);
-    glBufferData(GL_ARRAY_BUFFER, lines.size()*sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
-
-    glUseProgram(g_prog);
-    GLint loc = glGetUniformLocation(g_prog, "uMVP");
-    glm::mat4 model = glm::mat4(1.0f);
-    glm::mat4 mvp = vp * model;
-    glUniformMatrix4fv(loc, 1, GL_FALSE, &mvp[0][0]);
-    GLint col = glGetUniformLocation(g_prog, "uColor");
-    glUniform3f(col, 0.6f, 0.6f, 0.6f);
-
-    glDrawArrays(GL_LINES, 0, (GLsizei)(lines.size()/3));
-
-    glBindVertexArray(0);
-    glDeleteBuffers(1, &tmpVBO);
-    glDeleteVertexArrays(1, &tmpVAO);
-}
-
-static void drawOriginMarker(const glm::mat4& vp) {
-    // small colored axes at origin
-    std::vector<float> verts = {
-        // X axis (red)
-        0.0f, 0.0f, 0.0f,  0.6f, 0.0f, 0.0f,
-        // Y axis (yellow)
-        0.0f, 0.0f, 0.0f,  0.0f, 0.6f, 0.0f,
-        // Z axis (blue)
-        0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 0.6f
-    };
-
-    GLuint tmpVBO=0, tmpVAO=0;
-    glGenBuffers(1, &tmpVBO);
-    glGenVertexArrays(1, &tmpVAO);
-    glBindVertexArray(tmpVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, tmpVBO);
-    glBufferData(GL_ARRAY_BUFFER, verts.size()*sizeof(float), verts.data(), GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
-
-    glUseProgram(g_prog);
-    GLint loc = glGetUniformLocation(g_prog, "uMVP");
-    glm::mat4 model = glm::mat4(1.0f);
-    glm::mat4 mvp = vp * model;
-    glUniformMatrix4fv(loc, 1, GL_FALSE, &mvp[0][0]);
-    GLint col = glGetUniformLocation(g_prog, "uColor");
-
-    // draw X (first two verts)
-    glUniform3f(col, 1.0f, 0.0f, 0.0f);
-    glDrawArrays(GL_LINES, 0, 2);
-    // draw Y (yellow)
-    glUniform3f(col, 1.0f, 0.9f, 0.2f);
-    glDrawArrays(GL_LINES, 2, 2);
-    // draw Z
-    glUniform3f(col, 0.0f, 0.0f, 1.0f);
-    glDrawArrays(GL_LINES, 4, 2);
-
-    glBindVertexArray(0);
-    glDeleteBuffers(1, &tmpVBO);
-    glDeleteVertexArrays(1, &tmpVAO);
-}
-
-static void drawAxisLines(const glm::mat4& vp) {
-    // Draw long colored axes (X=red, Y=yellow, Z=blue)
-    std::vector<float> verts;
-    // X axis
-    verts.push_back(-100.0f); verts.push_back(0.0f); verts.push_back(0.0f);
-    verts.push_back(100.0f);  verts.push_back(0.0f); verts.push_back(0.0f);
-    // Y axis
-    verts.push_back(0.0f); verts.push_back(-100.0f); verts.push_back(0.0f);
-    verts.push_back(0.0f); verts.push_back(100.0f);  verts.push_back(0.0f);
-    // Z axis
-    verts.push_back(0.0f); verts.push_back(0.0f); verts.push_back(-100.0f);
-    verts.push_back(0.0f); verts.push_back(0.0f); verts.push_back(100.0f);
-
-    GLuint tmpVBO=0, tmpVAO=0;
-    glGenBuffers(1, &tmpVBO);
-    glGenVertexArrays(1, &tmpVAO);
-    glBindVertexArray(tmpVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, tmpVBO);
-    glBufferData(GL_ARRAY_BUFFER, verts.size()*sizeof(float), verts.data(), GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
-
-    glUseProgram(g_prog);
-    GLint loc = glGetUniformLocation(g_prog, "uMVP");
-    glm::mat4 model = glm::mat4(1.0f);
-    glm::mat4 mvp = vp * model;
-    glUniformMatrix4fv(loc, 1, GL_FALSE, &mvp[0][0]);
-    GLint col = glGetUniformLocation(g_prog, "uColor");
-
-    // Draw X (red)
-    glUniform3f(col, 1.0f, 0.2f, 0.2f);
-    glDrawArrays(GL_LINES, 0, 2);
-    // Draw Y (yellow)
-    glUniform3f(col, 1.0f, 0.9f, 0.2f);
-    glDrawArrays(GL_LINES, 2, 2);
-    // Draw Z (blue)
-    glUniform3f(col, 0.2f, 0.4f, 1.0f);
-    glDrawArrays(GL_LINES, 4, 2);
-
-    glBindVertexArray(0);
-    glDeleteBuffers(1, &tmpVBO);
-    glDeleteVertexArrays(1, &tmpVAO);
-}
-
 static void framebuffer_size_callback(GLFWwindow* /*w*/, int w, int h) {
     g_window_width = w; g_window_height = h;
     glViewport(0,0,w,h);
 }
 
 static void scroll_callback(GLFWwindow* /*w*/, double /*xoff*/, double yoff) {
-    // Increase zoom responsiveness
-    g_cameraDistance *= (1.0f - (float)yoff*0.12f);
-    if(g_cameraDistance < 0.2f) g_cameraDistance = 0.2f;
+    g_camera.onScroll(yoff);
 }
 
-static void drawSelectionBox(const glm::mat4& vp, const SceneEntity* ent) {
-    if(!ent || !ent->mesh) return;
-    // build model matrix same as scene draw
-    glm::mat4 model = glm::mat4(1.0f);
-    model = glm::translate(model, ent->position);
-    glm::quat q = glm::quat(glm::radians(ent->rotation));
-    model *= glm::toMat4(q);
-    model = glm::scale(model, ent->scale);
-    glm::mat4 mvp = vp * model;
-
-    // unit cube corners (object space, matches mesh extents -1..1)
-    std::vector<float> lines = {
-        // bottom face
-        -1.0f,-1.0f,-1.0f,  1.0f,-1.0f,-1.0f,
-        1.0f,-1.0f,-1.0f,   1.0f, 1.0f,-1.0f,
-        1.0f, 1.0f,-1.0f,  -1.0f, 1.0f,-1.0f,
-        -1.0f, 1.0f,-1.0f, -1.0f,-1.0f,-1.0f,
-        // top face
-        -1.0f,-1.0f, 1.0f,  1.0f,-1.0f, 1.0f,
-        1.0f,-1.0f, 1.0f,   1.0f, 1.0f, 1.0f,
-        1.0f, 1.0f, 1.0f,  -1.0f, 1.0f, 1.0f,
-        -1.0f, 1.0f, 1.0f, -1.0f,-1.0f, 1.0f,
-        // vertical edges
-        -1.0f,-1.0f,-1.0f, -1.0f,-1.0f, 1.0f,
-        1.0f,-1.0f,-1.0f,  1.0f,-1.0f, 1.0f,
-        1.0f, 1.0f,-1.0f,  1.0f, 1.0f, 1.0f,
-        -1.0f, 1.0f,-1.0f, -1.0f, 1.0f, 1.0f
-    };
-
-    GLuint tmpVBO=0, tmpVAO=0;
-    glGenBuffers(1, &tmpVBO);
-    glGenVertexArrays(1, &tmpVAO);
-    glBindVertexArray(tmpVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, tmpVBO);
-    glBufferData(GL_ARRAY_BUFFER, lines.size()*sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
-
-    glUseProgram(g_prog);
-    GLint loc = glGetUniformLocation(g_prog, "uMVP");
-    glUniformMatrix4fv(loc, 1, GL_FALSE, &mvp[0][0]);
-    GLint col = glGetUniformLocation(g_prog, "uColor");
-
-    // thicker, bright color for visibility
-    glLineWidth(3.0f);
-    glUniform3f(col, 1.0f, 0.2f, 1.0f); // magenta
-    glDrawArrays(GL_LINES, 0, (GLsizei)(lines.size()/3));
-    glLineWidth(1.0f);
-
-    glBindVertexArray(0);
-    glDeleteBuffers(1, &tmpVBO);
-    glDeleteVertexArrays(1, &tmpVAO);
-}
-
+// add last view/proj globals used by ImGuizmo and overlays
 static glm::mat4 g_lastView = glm::mat4(1.0f);
 static glm::mat4 g_lastProj = glm::mat4(1.0f);
 
-static void drawAxisOverlay(const SceneEntity* ent, const glm::mat4& view, const glm::mat4& proj, const ImVec2& vp_pos, const ImVec2& vp_size) {
-    if(!ent) return;
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    ImFont* font = ImGui::GetFont();
-    float fontSize = ImGui::GetFontSize();
+// forward declarations for overlay helpers (defined later in this file)
+static void drawAxisOverlay(const SceneEntity* ent, const glm::mat4& view, const glm::mat4& proj, const ImVec2& vp_pos, const ImVec2& vp_size);
+static void drawRotationArcs(const SceneEntity* ent, const glm::mat4& view, const glm::mat4& proj, const ImVec2& vp_pos, const ImVec2& vp_size);
 
-    // model matrix
-    glm::mat4 model = glm::mat4(1.0f);
-    model = glm::translate(model, ent->position);
-    glm::quat q = glm::quat(glm::radians(ent->rotation));
-    model *= glm::toMat4(q);
-    model = glm::scale(model, ent->scale);
-
-    // object-space axis endpoints (unit length)
-    glm::vec3 origin = glm::vec3(0.0f);
-    glm::vec3 ax = glm::vec3(1.0f, 0.0f, 0.0f);
-    glm::vec3 ay = glm::vec3(0.0f, 1.0f, 0.0f);
-    glm::vec3 az = glm::vec3(0.0f, 0.0f, 1.0f);
-
-    // transform to world
-    glm::vec4 o_w = model * glm::vec4(origin, 1.0f);
-    glm::vec4 x_w = model * glm::vec4(ax, 1.0f);
-    glm::vec4 y_w = model * glm::vec4(ay, 1.0f);
-    glm::vec4 z_w = model * glm::vec4(az, 1.0f);
-
-    // project to window coordinates (glm::project uses origin bottom-left)
-    // Use framebuffer viewport (origin 0,0) so projected coords are relative to the rendered FBO
-    glm::vec4 fb_viewport = glm::vec4(0, 0, (g_fbo ? g_fbo_width : g_window_width), (g_fbo ? g_fbo_height : g_window_height));
-    glm::vec3 o_s = glm::project(glm::vec3(o_w), view, proj, fb_viewport);
-    glm::vec3 x_s = glm::project(glm::vec3(x_w), view, proj, fb_viewport);
-    glm::vec3 y_s = glm::project(glm::vec3(y_w), view, proj, fb_viewport);
-    glm::vec3 z_s = glm::project(glm::vec3(z_w), view, proj, fb_viewport);
-
-    // convert to ImGui coordinates (origin top-left)
-    ImVec2 o_p = ImVec2(vp_pos.x + o_s.x, vp_pos.y + (vp_size.y - o_s.y));
-    ImVec2 x_p = ImVec2(vp_pos.x + x_s.x, vp_pos.y + (vp_size.y - x_s.y));
-    ImVec2 y_p = ImVec2(vp_pos.x + y_s.x, vp_pos.y + (vp_size.y - y_s.y));
-    ImVec2 z_p = ImVec2(vp_pos.x + z_s.x, vp_pos.y + (vp_size.y - z_s.y));
-
-    // draw axis lines
-    dl->AddLine(o_p, x_p, IM_COL32(255,80,80,220), 3.0f);
-    dl->AddLine(o_p, y_p, IM_COL32(255,230,60,220), 3.0f);
-    dl->AddLine(o_p, z_p, IM_COL32(80,160,255,220), 3.0f);
-
-    // draw labels near endpoints
-    dl->AddText(font, fontSize, ImVec2(x_p.x + 4, x_p.y - fontSize*0.5f), IM_COL32(255,80,80,255), "X");
-    dl->AddText(font, fontSize, ImVec2(y_p.x + 4, y_p.y - fontSize*0.5f), IM_COL32(255,230,60,255), "Y");
-    dl->AddText(font, fontSize, ImVec2(z_p.x + 4, z_p.y - fontSize*0.5f), IM_COL32(80,160,255,255), "Z");
-}
-
-static float sqr(float x) { return x*x; }
-static float pointSegmentDist2(const ImVec2& p, const ImVec2& a, const ImVec2& b) {
-    ImVec2 ab = ImVec2(b.x - a.x, b.y - a.y);
-    ImVec2 ap = ImVec2(p.x - a.x, p.y - a.y);
-    float ab2 = ab.x*ab.x + ab.y*ab.y;
-    if(ab2 == 0.0f) return ap.x*ap.x + ap.y*ap.y;
-    float t = (ap.x*ab.x + ap.y*ab.y) / ab2;
-    t = std::max(0.0f, std::min(1.0f, t));
-    ImVec2 proj = ImVec2(a.x + ab.x * t, a.y + ab.y * t);
-    return (p.x - proj.x)*(p.x - proj.x) + (p.y - proj.y)*(p.y - proj.y);
-}
-
-static void drawRotationArcs(const SceneEntity* ent, const glm::mat4& view, const glm::mat4& proj, const ImVec2& vp_pos, const ImVec2& vp_size) {
-    if(!ent) return;
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    ImVec2 mouse = ImGui::GetIO().MousePos;
-
-    // Model matrix without projection
-    glm::mat4 model = glm::mat4(1.0f);
-    model = glm::translate(model, ent->position);
-    glm::quat q = glm::quat(glm::radians(ent->rotation));
-    model *= glm::toMat4(q);
-    model = glm::scale(model, ent->scale);
-
-    // radius in object space (use 1.0 times max scale component)
-    float radius = std::max({ ent->scale.x, ent->scale.y, ent->scale.z }) * 1.5f;
-    const int samples = 96;
-    const float PI = 3.14159265358979323846f;
-
-    // For each axis, build circle in object space
-    struct AxisInfo { glm::vec3 axis; ImU32 worldCol; ImU32 localCol; };
-    AxisInfo axes[3] = {
-        { glm::vec3(1,0,0), IM_COL32(255,80,80,220), IM_COL32(255,140,140,220) },
-        { glm::vec3(0,1,0), IM_COL32(255,230,60,220), IM_COL32(255,200,110,220) },
-        { glm::vec3(0,0,1), IM_COL32(80,160,255,220), IM_COL32(140,190,255,220) }
-    };
-
-    // Determine plane basis for each axis and generate points
-    for(int ai=0; ai<3; ++ai) {
-        glm::vec3 axis = axes[ai].axis;
-        // In world mode use world axes, in local mode transform by rotation (model without translation/scale)
-        glm::vec3 ex, ey;
-        if(g_gizmoMode == ImGuizmo::LOCAL) {
-            glm::vec3 ax_w = glm::normalize(glm::vec3(glm::toMat4(q) * glm::vec4(axis, 0.0f)));
-            // choose two orthonormal vectors perpendicular to ax_w
-            if (fabs(ax_w.y) < 0.9f) ex = glm::normalize(glm::cross(ax_w, glm::vec3(0,1,0)));
-            else ex = glm::normalize(glm::cross(ax_w, glm::vec3(1,0,0)));
-            ey = glm::normalize(glm::cross(ax_w, ex));
-            // scale basis to radius
-            ex *= radius; ey *= radius;
-        } else {
-            // world mode: axis aligned basis
-            glm::vec3 ax_w = axis;
-            if (fabs(ax_w.y) < 0.9f) ex = glm::normalize(glm::cross(ax_w, glm::vec3(0,1,0)));
-            else ex = glm::normalize(glm::cross(ax_w, glm::vec3(1,0,0)));
-            ey = glm::normalize(glm::cross(ax_w, ex));
-            ex *= radius; ey *= radius;
-        }
-
-        // sample circle points
-        std::vector<ImVec2> pts; pts.reserve(samples);
-        for(int s=0;s<=samples;++s){
-            float t = (float)s / (float)samples * 2.0f * PI;
-            glm::vec3 p_obj = glm::vec3(0.0f) + (ex * cosf(t)) + (ey * sinf(t));
-            // transform to world
-            glm::vec4 p_world = model * glm::vec4(p_obj, 1.0f);
-            // project to screen (glm::project expects viewport as (x,y,w,h), origin bottom-left)
-            glm::vec4 fb_viewport = glm::vec4(0, 0, (g_fbo ? g_fbo_width : g_window_width), (g_fbo ? g_fbo_height : g_window_height));
-            glm::vec3 p_screen = glm::project(glm::vec3(p_world), view, proj, fb_viewport);
-            ImVec2 p_imgui = ImVec2(vp_pos.x + p_screen.x, vp_pos.y + (vp_size.y - p_screen.y));
-            pts.push_back(p_imgui);
-        }
-
-        // choose color based on mode
-        ImU32 col = (g_gizmoMode == ImGuizmo::LOCAL) ? axes[ai].localCol : axes[ai].worldCol;
-        // determine hover: nearest distance from mouse to polyline
-        float minDist2 = FLT_MAX;
-        for(int i=0;i<(int)pts.size()-1;++i){
-            float d2 = pointSegmentDist2(mouse, pts[i], pts[i+1]);
-            if(d2 < minDist2) minDist2 = d2;
-        }
-        bool hover = minDist2 <= (16.0f*16.0f); // 16 px threshold
-        float thickness = hover ? 4.0f : 2.0f;
-        ImU32 drawCol = hover ? IM_COL32(255,255,255,255) : col;
-        // draw polyline
-        dl->AddPolyline(pts.data(), (int)pts.size(), drawCol, false, thickness);
-        // if hovered, also draw small handle at nearest point
-        if(hover) {
-            // find nearest segment and projected point
-            float bestT=0; ImVec2 bestP; float bestD2 = FLT_MAX;
-            for(int i=0;i<(int)pts.size()-1;++i){
-                // project mouse onto segment
-                ImVec2 a = pts[i]; ImVec2 b = pts[i+1];
-                ImVec2 ab = ImVec2(b.x - a.x, b.y - a.y);
-                ImVec2 ap = ImVec2(mouse.x - a.x, mouse.y - a.y);
-                float ab2 = ab.x*ab.x + ab.y*ab.y;
-                float t = (ab2==0.0f)?0.0f:((ap.x*ab.x + ap.y*ab.y)/ab2);
-                t = std::max(0.0f, std::min(1.0f,t));
-                ImVec2 proj = ImVec2(a.x + ab.x*t, a.y + ab.y*t);
-                float d2 = (mouse.x - proj.x)*(mouse.x - proj.x) + (mouse.y - proj.y)*(mouse.y - proj.y);
-                if(d2 < bestD2){ bestD2 = d2; bestP = proj; bestT = t; }
-            }
-            dl->AddCircleFilled(bestP, 6.0f, IM_COL32(255,255,255,255));
-            // draw axis label
-            const char* lbl = (ai==0?"X":(ai==1?"Y":"Z"));
-            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(bestP.x + 8, bestP.y - ImGui::GetFontSize()*0.5f), IM_COL32(255,255,255,255), lbl);
-        }
-    }
-}
+// helper prototypes used by overlays
+static float sqr(float x);
+static float pointSegmentDist2(const ImVec2& p, const ImVec2& a, const ImVec2& b);
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
@@ -684,8 +313,9 @@ int main(int argc, char** argv) {
     // install stdout/stderr capture into GUI console
     GuiConsole::instance().installStdStreams();
 
-    // Create resources
-    g_prog = createProgram(VS_SIMPLE, FS_SIMPLE);
+    // Initialize renderer resources
+    Renderer::init();
+    g_prog = Renderer::getProgram();
     glEnable(GL_DEPTH_TEST);
 
     // Scene instance (use Scene API to manage entities)
@@ -752,6 +382,7 @@ int main(int argc, char** argv) {
          ImGui::Text("Primitives");
          ImGui::Checkbox("Record spawn only", &recordOnly);
          if(ImGui::Button("Cube")) {
+            g_spawnType = primitives::PrimitiveType::Cube;
             if(recordOnly) scene.recordSpawnOnly();
             else {
                 // schedule spawn at current mouse position (will resolve during render when view/proj available)
@@ -761,6 +392,24 @@ int main(int argc, char** argv) {
             }
          }
          ImGui::SameLine();
+         if(ImGui::Button("Sphere")) {
+            g_spawnType = primitives::PrimitiveType::Sphere;
+            if(recordOnly) scene.recordSpawnOnly();
+            else { ImGuiIO& io = ImGui::GetIO(); g_spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); g_spawnPending = true; }
+         }
+         ImGui::SameLine();
+         if(ImGui::Button("Cylinder")) {
+            g_spawnType = primitives::PrimitiveType::Cylinder;
+            if(recordOnly) scene.recordSpawnOnly();
+            else { ImGuiIO& io = ImGui::GetIO(); g_spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); g_spawnPending = true; }
+         }
+         ImGui::SameLine();
+         if(ImGui::Button("Plane")) {
+            g_spawnType = primitives::PrimitiveType::Plane;
+            if(recordOnly) scene.recordSpawnOnly();
+            else { ImGuiIO& io = ImGui::GetIO(); g_spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); g_spawnPending = true; }
+         }
+         ImGui::SameLine();
          if(ImGui::Button("Delete")) { scene.deleteSelected(); }
          ImGui::Separator();
 
@@ -768,6 +417,29 @@ int main(int argc, char** argv) {
          ImGui::SameLine();
          ImGui::Checkbox("Wireframe", &g_showWireframe); // quick inline toggle remains
          ImGui::Separator();
+         // Numeric transform panel (always visible in Tools)
+         ImGui::Text("Transform (selected)");
+         SceneEntity* selEntTools = scene.findById(scene.getSelectedId());
+         if(selEntTools) {
+             glm::vec3 posVal = selEntTools->position;
+             glm::vec3 rotVal = selEntTools->rotation;
+             glm::vec3 sclVal = selEntTools->scale;
+             if(ImGui::DragFloat3("Position", &posVal.x, 0.05f)) {
+                 scene.setSelectedPosition(posVal);
+             }
+             if(ImGui::DragFloat3("Rotation", &rotVal.x, 0.5f)) {
+                 scene.setSelectedRotation(rotVal);
+             }
+             if(ImGui::DragFloat3("Scale", &sclVal.x, 0.01f, 0.0001f)) {
+                 sclVal.x = std::max(0.0001f, sclVal.x);
+                 sclVal.y = std::max(0.0001f, sclVal.y);
+                 sclVal.z = std::max(0.0001f, sclVal.z);
+                 scene.setSelectedScale(sclVal);
+             }
+         } else {
+             ImGui::TextDisabled("No entity selected");
+         }
+
          if(g_showToolOptions) {
              ImGui::Text("Gizmo");
              ImGui::Checkbox("Use ImGuizmo", &g_useImGuizmo);
@@ -781,6 +453,11 @@ int main(int argc, char** argv) {
              if(ImGui::RadioButton("World", g_gizmoMode == ImGuizmo::WORLD)) g_gizmoMode = ImGuizmo::WORLD;
              ImGui::Checkbox("Show numeric fields", &g_showNumericWidgets);
              ImGui::Separator();
+
+             // Keep fallback gizmo in sync with ImGuizmo operation
+             if(g_gizmoOperation == ImGuizmo::TRANSLATE) g_gizmo.setOperation(Gizmo::Operation::Translate);
+             else if(g_gizmoOperation == ImGuizmo::ROTATE) g_gizmo.setOperation(Gizmo::Operation::Rotate);
+             else if(g_gizmoOperation == ImGuizmo::SCALE) g_gizmo.setOperation(Gizmo::Operation::Scale);
 
              // Show orientation manipulator (ImGuizmo) inside Tools panel
              // Prepare view matrix array
@@ -796,32 +473,9 @@ int main(int argc, char** argv) {
               ImVec2 manipPos = ImVec2(toolsPos.x + ImGui::GetContentRegionAvail().x - w - 8.0f, toolsPos.y + 4.0f);
             // Ensure ImGuizmo uses the current ImGui drawlist and rectangle for the Tools panel
             // so the manipulator can receive mouse events when rendered inside the panel.
-            ImGuizmo::SetDrawlist();
-            ImGuizmo::SetRect(manipPos.x * fbSx, manipPos.y * fbSy, w * fbSx, h * fbSy);
-            ImGuizmo::ViewManipulate(viewMatArr, 8.0f, ImVec2(manipPos.x, manipPos.y), ImVec2(w, h), 0);
+            GizmoController::viewManipulate(g_lastView, 8.0f, ImVec2(manipPos.x, manipPos.y), ImVec2(w, h), [&](const glm::vec3& camPos){ g_camera.setPosition(camPos); });
 
-            // If user interacted with the manipulator, update our orbit camera parameters
-            if(ImGuizmo::IsUsing()) {
-                 // reconstruct view matrix and extract camera world position
-                 glm::mat4 newView;
-                 memcpy(&newView[0][0], viewMatArr, sizeof(viewMatArr));
-                 glm::mat4 invView = glm::inverse(newView);
-                 glm::vec3 newCamPos = glm::vec3(invView[3]); // translation column
-
-                 // compute spherical parameters relative to current target
-                 glm::vec3 delta = newCamPos - g_cameraTarget;
-                 float dist = glm::length(delta);
-                 if(dist > 1e-6f) {
-                     g_cameraDistance = dist;
-                     // pitch = asin(y / dist)
-                     float pitch = asinf(glm::clamp(delta.y / dist, -1.0f, 1.0f));
-                     // yaw = atan2(x, z)
-                     float yaw = atan2f(delta.x, delta.z);
-                     g_cameraAngles.x = pitch;
-                     g_cameraAngles.y = yaw;
-                 }
-             }
-            }
+            } // end if(g_showToolOptions)
 
         ImGui::End();
         }
@@ -920,30 +574,13 @@ int main(int argc, char** argv) {
                 glm::vec2 cur((float)mx, (float)my);
                 if(!g_mouseMiddleDown) {
                     g_mouseMiddleDown = true;
-                    g_lastMousePos = cur;
+                    g_camera.beginMiddleDrag(cur);
                 } else {
-                    glm::vec2 delta = cur - g_lastMousePos;
-                    g_lastMousePos = cur;
-                    if(glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS) {
-                        // Pan: move the camera target in camera-space (right/up) so pan feels natural regardless of orbit angle
-                        float panSpeed = 0.0015f * g_cameraDistance; // tune factor
-                        // reconstruct camera position from spherical angles so we can derive basis vectors
-                        glm::vec3 camPos;
-                        camPos.x = g_cameraTarget.x + g_cameraDistance * cos(g_cameraAngles.x) * sin(g_cameraAngles.y);
-                        camPos.y = g_cameraTarget.y + g_cameraDistance * sin(g_cameraAngles.x);
-                        camPos.z = g_cameraTarget.z + g_cameraDistance * cos(g_cameraAngles.x) * cos(g_cameraAngles.y);
-                        glm::vec3 forward = glm::normalize(g_cameraTarget - camPos);
-                        glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-                        glm::vec3 right = glm::normalize(glm::cross(forward, worldUp));
-                        glm::vec3 upVec = glm::normalize(glm::cross(right, forward));
-                        g_cameraTarget += (-right * delta.x * panSpeed) + (upVec * delta.y * panSpeed);
-                    } else {
-                        // Increase orbit sensitivity for more responsive navigation
-                        g_cameraAngles.x += delta.y * 0.008f;
-                        g_cameraAngles.y += delta.x * 0.008f;
-                     }
-                 }
+                    bool alt = (glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS);
+                    g_camera.updateMiddleDrag(cur, alt);
+                }
              } else {
+                 if(g_mouseMiddleDown) g_camera.endMiddleDrag();
                  g_mouseMiddleDown = false;
              }
          }
@@ -956,13 +593,9 @@ int main(int argc, char** argv) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             // Camera
-            glm::vec3 camPos;
-            camPos.x = g_cameraTarget.x + g_cameraDistance * cos(g_cameraAngles.x) * sin(g_cameraAngles.y);
-            camPos.y = g_cameraTarget.y + g_cameraDistance * sin(g_cameraAngles.x);
-            camPos.z = g_cameraTarget.z + g_cameraDistance * cos(g_cameraAngles.x) * cos(g_cameraAngles.y);
-            glm::mat4 view = glm::lookAt(camPos, g_cameraTarget, glm::vec3(0,1,0));
+            glm::mat4 view = g_camera.getView();
             float aspect = (float)g_fbo_width / (g_fbo_height > 0 ? (float)g_fbo_height : 1.0f);
-            glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
+            glm::mat4 proj = g_camera.getProjection(aspect);
             glm::mat4 vp = proj * view;
 
             // store last view/proj so other UI (Tools) can access the camera orientation
@@ -971,15 +604,9 @@ int main(int argc, char** argv) {
 
             // If a spawn was requested earlier, resolve screen->world and spawn on ground plane (y=0)
             if(g_spawnPending) {
-                // compute mouse pos relative to viewport
-                glm::vec2 mp = g_spawnMousePos;
-                // default to center if mouse not over viewport
-                float mx = mp.x - viewport_pos.x;
-                float my = mp.y - viewport_pos.y;
-                if(mx < 0.0f || mx > viewport_size.x || my < 0.0f || my > viewport_size.y) {
-                    mx = viewport_size.x * 0.5f;
-                    my = viewport_size.y * 0.5f;
-                }
+                // spawn at center of viewport
+                float mx = viewport_size.x * 0.5f;
+                float my = viewport_size.y * 0.5f;
                 // convert to framebuffer coordinates (origin bottom-left)
                 float fbx = mx;
                 float fby = (float)g_fbo_height - my;
@@ -995,26 +622,47 @@ int main(int argc, char** argv) {
                 snapped.x = std::floor(spawnPos.x) + 0.5f;
                 snapped.y = 0.5f;
                 snapped.z = std::floor(spawnPos.z) + 0.5f;
-                int newId = scene.addCube(snapped);
-                // scale cube to 0.5 so mesh (-1..1) becomes unit cube [0..1]
-                scene.setSelectedScale(glm::vec3(0.5f));
-                // optionally select the new cube (addCube already selects)
-                g_spawnPending = false;
+                int newId = scene.addPrimitive(g_spawnType, snapped);
+                // set per-primitive default scale so spawned objects have sensible size
+                glm::vec3 defaultScale(1.0f);
+                switch(g_spawnType) {
+                    case primitives::PrimitiveType::Cube:    defaultScale = glm::vec3(0.5f); break;
+                    case primitives::PrimitiveType::Sphere:  defaultScale = glm::vec3(0.5f); break;
+                    case primitives::PrimitiveType::Cylinder:defaultScale = glm::vec3(0.5f); break;
+                    case primitives::PrimitiveType::Plane:   defaultScale = glm::vec3(1.0f); break;
+                    default: defaultScale = glm::vec3(1.0f); break;
+                }
+                scene.setSelectedScale(defaultScale);
+                 // optionally select the new cube (addCube already selects)
+                 g_spawnPending = false;
             }
 
             // Render grid + scene entities into FBO
             glUseProgram(g_prog);
             if(g_showWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            drawGrid(vp);
+            Renderer::renderGrid(vp);
 
             // Use Scene to draw all entities
             scene.drawAll(g_prog, vp);
 
+            // ImGuizmo manipulation when rendering to FBO
+            if(g_useImGuizmo && scene.getSelectedId() != 0) {
+                bool active = GizmoController::manipulate(scene, view, proj, viewport_pos, viewport_size, g_gizmoOperation, g_gizmoMode, g_useImGuizmo);
+                if(active) {
+                    if(!g_imguizmoActive) { g_imguizmoActive = true; g_imguizmoEntity = scene.getSelectedId(); g_imguizmoBefore = scene.getEntityTransform(g_imguizmoEntity); }
+                } else {
+                    if(g_imguizmoActive) { Scene::Transform after = scene.getEntityTransform(g_imguizmoEntity); scene.pushCommand(std::unique_ptr<Scene::Command>(new Scene::TransformCommand(g_imguizmoEntity, g_imguizmoBefore, after))); g_imguizmoActive = false; }
+                }
+            } else {
+                // fallback gizmo
+                g_gizmo.drawGizmo(vp, glm::vec2(viewport_pos.x, viewport_pos.y), glm::vec2(viewport_size.x, viewport_size.y), scene);
+            }
+
             // Draw selection box when rotating or scaling to improve visibility
             SceneEntity* selEnt = scene.findById(scene.getSelectedId());
             if(selEnt && (g_gizmoOperation == ImGuizmo::ROTATE || g_gizmoOperation == ImGuizmo::SCALE)) {
-                drawSelectionBox(vp, selEnt);
+                Renderer::drawSelectionBox(vp, selEnt);
                 // draw axis direction overlay (screen-space labels/lines)
                 drawAxisOverlay(selEnt, view, proj, viewport_pos, viewport_size);
             }
@@ -1026,71 +674,6 @@ int main(int argc, char** argv) {
             // Draw long axis lines for orientation (already added)
             // drawAxisLines(vp); // keep if desired (already called)
 
-            // draw origin marker so center is visible
-            drawOriginMarker(vp);
-
-             // ImGuizmo manipulation (if enabled)
-             if(g_useImGuizmo && scene.getSelectedId() != 0) {
-                 ImGuiIO& io2 = ImGui::GetIO();
-                 float fbSx2 = io2.DisplayFramebufferScale.x;
-                 float fbSy2 = io2.DisplayFramebufferScale.y;
-                 ImGuizmo::BeginFrame();
-                 ImGuizmo::SetOrthographic(false);
-                 ImGuizmo::SetDrawlist();
-                 // provide rectangle in framebuffer pixel coordinates
-                 ImGuizmo::SetRect(viewport_pos.x * fbSx2, viewport_pos.y * fbSy2, viewport_size.x * fbSx2, viewport_size.y * fbSx2);
-
-                // prepare matrices
-                glm::mat4 model = glm::mat4(1.0f);
-                SceneEntity* ent = scene.findById(scene.getSelectedId());
-                if(ent) {
-                    model = glm::translate(model, ent->position);
-                    model *= glm::toMat4(glm::quat(glm::radians(ent->rotation)));
-                    model = glm::scale(model, ent->scale);
-
-                    float viewMat[16]; float projMat[16]; float modelMat[16];
-                    memcpy(viewMat, &view[0][0], sizeof(viewMat));
-                    memcpy(projMat, &proj[0][0], sizeof(projMat));
-                    memcpy(modelMat, &model[0][0], sizeof(modelMat));
-
-                    // Manipulate model; ImGuizmo will modify modelMat in place
-                    ImGuizmo::Manipulate(viewMat, projMat, g_gizmoOperation, g_gizmoMode, modelMat, NULL);
-
-                    // Only update the entity if the gizmo is being used. This avoids
-                    // writing back unchanged values every frame and prevents jitter.
-                    if(ImGuizmo::IsUsing()) {
-                        float t[3], r[3], s[3];
-                        ImGuizmo::DecomposeMatrixToComponents(modelMat, t, r, s);
-
-                        glm::vec3 newPos = glm::vec3(t[0], t[1], t[2]);
-                        glm::vec3 newRot = glm::vec3(r[0], r[1], r[2]); // degrees
-                        glm::vec3 newScale = glm::vec3(s[0], s[1], s[2]);
-
-                        // Track gizmo state for undo
-                        if(!g_imguizmoActive) {
-                            g_imguizmoActive = true;
-                            g_imguizmoEntity = scene.getSelectedId();
-                            g_imguizmoBefore = scene.getEntityTransform(g_imguizmoEntity);
-                        }
-
-                        scene.setSelectedPosition(newPos);
-                        scene.setSelectedRotation(newRot);
-                        scene.setSelectedScale(newScale);
-
-                        // optionally handle live feedback or snapping here
-                    }
-                    // If previously active but now not using, commit command
-                    if(g_imguizmoActive && !ImGuizmo::IsUsing()) {
-                        Scene::Transform after = scene.getEntityTransform(g_imguizmoEntity);
-                        scene.pushCommand(std::unique_ptr<Scene::Command>(new Scene::TransformCommand(g_imguizmoEntity, g_imguizmoBefore, after)));
-                        g_imguizmoActive = false;
-                    }
-                }
-            } else {
-                // Draw on-screen gizmo overlay (ImGui coords) - keep legacy gizmo for fallback
-                g_gizmo.drawGizmo(vp, glm::vec2(viewport_pos.x, viewport_pos.y), glm::vec2(viewport_size.x, viewport_size.y), scene);
-            }
-
             // Done rendering to FBO
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
         } else {
@@ -1100,20 +683,16 @@ int main(int argc, char** argv) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             // Camera
-            glm::vec3 camPos;
-            camPos.x = g_cameraTarget.x + g_cameraDistance * cos(g_cameraAngles.x) * sin(g_cameraAngles.y);
-            camPos.y = g_cameraTarget.y + g_cameraDistance * sin(g_cameraAngles.x);
-            camPos.z = g_cameraTarget.z + g_cameraDistance * cos(g_cameraAngles.x) * cos(g_cameraAngles.y);
-            glm::mat4 view = glm::lookAt(camPos, g_cameraTarget, glm::vec3(0,1,0));
+            glm::mat4 view = g_camera.getView();
             float aspect = (float)g_window_width / (g_window_height > 0 ? (float)g_window_height : 1.0f);
-            glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
+            glm::mat4 proj = g_camera.getProjection(aspect);
             glm::mat4 vp = proj * view;
 
             // Render grid
             glUseProgram(g_prog);
             if(g_showWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            drawGrid(vp);
+            Renderer::renderGrid(vp);
 
             // Use Scene to draw all entities
             scene.drawAll(g_prog, vp);
@@ -1122,40 +701,16 @@ int main(int argc, char** argv) {
 
             // ImGuizmo manipulation (fallback path)
             if(g_useImGuizmo && scene.getSelectedId() != 0) {
-                ImGuiIO& io_fb2 = ImGui::GetIO();
-                float fbSx2 = io_fb2.DisplayFramebufferScale.x;
-                float fbSy2 = io_fb2.DisplayFramebufferScale.y;
-                ImGuizmo::BeginFrame();
-                ImGuizmo::SetOrthographic(false);
-                ImGuizmo::SetDrawlist();
-                ImGuizmo::SetRect(viewport_pos.x * fbSx2, viewport_pos.y * fbSy2, viewport_size.x * fbSx2, viewport_size.y * fbSx2);
-
-                glm::mat4 model = glm::mat4(1.0f);
-                SceneEntity* ent = scene.findById(scene.getSelectedId());
-                if(ent) {
-                    model = glm::translate(model, ent->position);
-                    model *= glm::toMat4(glm::quat(glm::radians(ent->rotation)));
-                    model = glm::scale(model, ent->scale);
-
-                    float viewMat[16]; float projMat[16]; float modelMat[16];
-                    memcpy(viewMat, &view[0][0], sizeof(viewMat));
-                    memcpy(projMat, &proj[0][0], sizeof(projMat));
-                    memcpy(modelMat, &model[0][0], sizeof(modelMat));
-
-                    ImGuizmo::Manipulate(viewMat, projMat, g_gizmoOperation, g_gizmoMode, modelMat, NULL);
-                    // Only update entity when gizmo is actively used to avoid jitter
-                    if(ImGuizmo::IsUsing()) {
-                        float t[3], r[3], s[3];
-                        ImGuizmo::DecomposeMatrixToComponents(modelMat, t, r, s);
-                        scene.setSelectedPosition(glm::vec3(t[0], t[1], t[2]));
-                        scene.setSelectedRotation(glm::vec3(r[0], r[1], r[2]));
-                        scene.setSelectedScale(glm::vec3(s[0], s[1], s[2]));
-                    }
-
-                     // draw view manipulator in top-right of viewport
-                     ImGuizmo::ViewManipulate(viewMat, 8.0f, ImVec2(viewport_pos.x + viewport_size.x - 88, viewport_pos.y + 8), ImVec2(80,80), 0xFFFFFFFF);
-                }
+                 // Use GizmoController to manipulate selected entity
+                 bool active = GizmoController::manipulate(scene, view, proj, viewport_pos, viewport_size, g_gizmoOperation, g_gizmoMode, g_useImGuizmo);
+                 // manage undo stack similar to previous logic
+                 if(active) {
+                     if(!g_imguizmoActive) { g_imguizmoActive = true; g_imguizmoEntity = scene.getSelectedId(); g_imguizmoBefore = scene.getEntityTransform(g_imguizmoEntity); }
+                 } else {
+                     if(g_imguizmoActive) { Scene::Transform after = scene.getEntityTransform(g_imguizmoEntity); scene.pushCommand(std::unique_ptr<Scene::Command>(new Scene::TransformCommand(g_imguizmoEntity, g_imguizmoBefore, after))); g_imguizmoActive = false; }
+                 }
             } else {
+                // Draw on-screen gizmo overlay (ImGui coords) - keep legacy gizmo for fallback
                 g_gizmo.drawGizmo(vp, glm::vec2(viewport_pos.x, viewport_pos.y), glm::vec2(viewport_size.x, viewport_size.y), scene);
             }
         }
@@ -1208,5 +763,129 @@ int main(int argc, char** argv) {
 
     glfwDestroyWindow(window);
     glfwTerminate();
+    Renderer::destroy();
     return 0;
+}
+
+// Implementations for overlays (axis labels and rotation arcs)
+static void drawAxisOverlay(const SceneEntity* ent, const glm::mat4& view, const glm::mat4& proj, const ImVec2& vp_pos, const ImVec2& vp_size) {
+    if(!ent) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    float fontSize = ImGui::GetFontSize();
+
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::translate(model, ent->position);
+    glm::quat q = glm::quat(glm::radians(ent->rotation));
+    model *= glm::toMat4(q);
+    model = glm::scale(model, ent->scale);
+
+    glm::vec3 origin = glm::vec3(0.0f);
+    glm::vec3 ax = glm::vec3(1.0f, 0.0f, 0.0f);
+    glm::vec3 ay = glm::vec3(0.0f, 1.0f, 0.0f);
+    glm::vec3 az = glm::vec3(0.0f, 0.0f, 1.0f);
+
+    glm::vec4 o_w = model * glm::vec4(origin, 1.0f);
+    glm::vec4 x_w = model * glm::vec4(ax, 1.0f);
+    glm::vec4 y_w = model * glm::vec4(ay, 1.0f);
+    glm::vec4 z_w = model * glm::vec4(az, 1.0f);
+
+    glm::vec4 fb_viewport = glm::vec4(0, 0, (g_fbo ? g_fbo_width : g_window_width), (g_fbo ? g_fbo_height : g_window_height));
+    glm::vec3 o_s = glm::project(glm::vec3(o_w), view, proj, fb_viewport);
+    glm::vec3 x_s = glm::project(glm::vec3(x_w), view, proj, fb_viewport);
+    glm::vec3 y_s = glm::project(glm::vec3(y_w), view, proj, fb_viewport);
+    glm::vec3 z_s = glm::project(glm::vec3(z_w), view, proj, fb_viewport);
+
+    ImVec2 o_p = ImVec2(vp_pos.x + o_s.x, vp_pos.y + (vp_size.y - o_s.y));
+    ImVec2 x_p = ImVec2(vp_pos.x + x_s.x, vp_pos.y + (vp_size.y - x_s.y));
+    ImVec2 y_p = ImVec2(vp_pos.x + y_s.x, vp_pos.y + (vp_size.y - y_s.y));
+    ImVec2 z_p = ImVec2(vp_pos.x + z_s.x, vp_pos.y + (vp_size.y - z_s.y));
+
+    dl->AddLine(o_p, x_p, IM_COL32(255,80,80,220), 3.0f);
+    dl->AddLine(o_p, y_p, IM_COL32(255,230,60,220), 3.0f);
+    dl->AddLine(o_p, z_p, IM_COL32(80,160,255,220), 3.0f);
+
+    dl->AddText(font, fontSize, ImVec2(x_p.x + 4, x_p.y - fontSize*0.5f), IM_COL32(255,80,80,255), "X");
+    dl->AddText(font, fontSize, ImVec2(y_p.x + 4, y_p.y - fontSize*0.5f), IM_COL32(255,230,60,255), "Y");
+    dl->AddText(font, fontSize, ImVec2(z_p.x + 4, z_p.y - fontSize*0.5f), IM_COL32(80,160,255,255), "Z");
+}
+
+static void drawRotationArcs(const SceneEntity* ent, const glm::mat4& view, const glm::mat4& proj, const ImVec2& vp_pos, const ImVec2& vp_size) {
+    if(!ent) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImVec2 mouse = ImGui::GetIO().MousePos;
+
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::translate(model, ent->position);
+    glm::quat q = glm::quat(glm::radians(ent->rotation));
+    model *= glm::toMat4(q);
+    model = glm::scale(model, ent->scale);
+
+    float radius = std::max({ ent->scale.x, ent->scale.y, ent->scale.z }) * 1.5f;
+    const int samples = 96;
+    const float PI = 3.14159265358979323846f;
+
+    struct AxisInfo { glm::vec3 axis; ImU32 worldCol; ImU32 localCol; };
+    AxisInfo axes[3] = {
+        { glm::vec3(1,0,0), IM_COL32(255,80,80,220), IM_COL32(255,140,140,220) },
+        { glm::vec3(0,1,0), IM_COL32(255,230,60,220), IM_COL32(255,200,110,220) },
+        { glm::vec3(0,0,1), IM_COL32(80,160,255,220), IM_COL32(140,190,255,220) }
+    };
+
+    for(int ai=0; ai<3; ++ai) {
+        glm::vec3 axis = axes[ai].axis;
+        glm::vec3 ex, ey;
+        if(g_gizmoMode == ImGuizmo::LOCAL) {
+            glm::vec3 ax_w = glm::normalize(glm::vec3(glm::toMat4(q) * glm::vec4(axis, 0.0f)));
+            if (fabs(ax_w.y) < 0.9f) ex = glm::normalize(glm::cross(ax_w, glm::vec3(0,1,0)));
+            else ex = glm::normalize(glm::cross(ax_w, glm::vec3(1,0,0)));
+            ey = glm::normalize(glm::cross(ax_w, ex));
+            ex *= radius; ey *= radius;
+        } else {
+            glm::vec3 ax_w = axis;
+            if (fabs(ax_w.y) < 0.9f) ex = glm::normalize(glm::cross(ax_w, glm::vec3(0,1,0)));
+            else ex = glm::normalize(glm::cross(ax_w, glm::vec3(1,0,0)));
+            ey = glm::normalize(glm::cross(ax_w, ex));
+            ex *= radius; ey *= radius;
+        }
+
+        std::vector<ImVec2> pts; pts.reserve(samples+1);
+        glm::vec4 fb_viewport = glm::vec4(0, 0, (g_fbo ? g_fbo_width : g_window_width), (g_fbo ? g_fbo_height : g_window_height));
+        for(int s=0;s<=samples;++s){
+            float t = (float)s / (float)samples * 2.0f * PI;
+            glm::vec3 p_obj = glm::vec3(0.0f) + (ex * cosf(t)) + (ey * sinf(t));
+            glm::vec4 p_world = model * glm::vec4(p_obj, 1.0f);
+            glm::vec3 p_screen = glm::project(glm::vec3(p_world), view, proj, fb_viewport);
+            ImVec2 p_imgui = ImVec2(vp_pos.x + p_screen.x, vp_pos.y + (vp_size.y - p_screen.y));
+            pts.push_back(p_imgui);
+        }
+
+        ImU32 col = (g_gizmoMode == ImGuizmo::LOCAL) ? axes[ai].localCol : axes[ai].worldCol;
+        float minDist2 = FLT_MAX;
+        for(int i=0;i<(int)pts.size()-1;++i){ float d2 = pointSegmentDist2(mouse, pts[i], pts[i+1]); if(d2 < minDist2) minDist2 = d2; }
+        bool hover = minDist2 <= (16.0f*16.0f);
+        float thickness = hover ? 4.0f : 2.0f;
+        ImU32 drawCol = hover ? IM_COL32(255,255,255,255) : col;
+        dl->AddPolyline(pts.data(), (int)pts.size(), drawCol, false, thickness);
+        if(hover) {
+            float bestD2 = FLT_MAX; ImVec2 bestP;
+            for(int i=0;i<(int)pts.size()-1;++i){ ImVec2 a = pts[i]; ImVec2 b = pts[i+1]; ImVec2 ab = ImVec2(b.x - a.x, b.y - a.y); ImVec2 ap = ImVec2(mouse.x - a.x, mouse.y - a.y); float ab2 = ab.x*ab.x + ab.y*ab.y; float t = (ab2==0.0f)?0.0f:((ap.x*ab.x + ap.y*ab.y)/ab2); t = std::max(0.0f, std::min(1.0f,t)); ImVec2 projp = ImVec2(a.x + ab.x*t, a.y + ab.y*t); float d2 = (mouse.x - projp.x)*(mouse.x - projp.x) + (mouse.y - projp.y)*(mouse.y - projp.y); if(d2 < bestD2){ bestD2 = d2; bestP = projp; } }
+            dl->AddCircleFilled(bestP, 6.0f, IM_COL32(255,255,255,255));
+            const char* lbl = (ai==0?"X":(ai==1?"Y":"Z"));
+            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(bestP.x + 8, bestP.y - ImGui::GetFontSize()*0.5f), IM_COL32(255,255,255,255), lbl);
+        }
+    }
+}
+
+// helper: squared and point-to-segment squared distance (used by rotation arcs)
+static float sqr(float x) { return x*x; }
+static float pointSegmentDist2(const ImVec2& p, const ImVec2& a, const ImVec2& b) {
+    ImVec2 ab = ImVec2(b.x - a.x, b.y - a.y);
+    ImVec2 ap = ImVec2(p.x - a.x, p.y - a.y);
+    float ab2 = ab.x*ab.x + ab.y*ab.y;
+    if(ab2 == 0.0f) return ap.x*ap.x + ap.y*ap.y;
+    float t = (ap.x*ab.x + ap.y*ab.y) / ab2;
+    t = std::max(0.0f, std::min(1.0f, t));
+    ImVec2 proj = ImVec2(a.x + ab.x * t, a.y + ab.y * t);
+    return (p.x - proj.x)*(p.x - proj.x) + (p.y - proj.y)*(p.y - proj.y);
 }
