@@ -1,4 +1,5 @@
 #include "gui_console.h"
+#include "log.h"
 #include <iostream>
 
 GuiConsole& GuiConsole::instance() {
@@ -62,6 +63,11 @@ int GuiConsole::CapturingBuf::overflow(int_type c) {
     // append and flush on newline
     char buf[2] = { ch, 0 };
     owner_->append(std::string(buf));
+    // Also log via Log at debug level for capture
+    {
+        std::string s(1, ch);
+        Log::log(Log::Level::Debug, s);
+    }
     return c;
 }
 
@@ -69,5 +75,7 @@ std::streamsize GuiConsole::CapturingBuf::xsputn(const char_type* s, std::stream
     if(orig_) orig_->sputn(s, n);
     // append as a single string
     owner_->append(std::string(s, (size_t)n));
+    // Also log the whole string
+    Log::log(Log::Level::Debug, std::string(s, (size_t)n));
     return n;
 }

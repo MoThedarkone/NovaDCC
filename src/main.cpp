@@ -42,6 +42,7 @@
 #include "tools_window.h"
 #include "assets_window.h"
 #include "bottom_window.h"
+#include "animator.h"
 
 static Gizmo g_gizmo;
 
@@ -50,7 +51,6 @@ static int g_window_height = 800;
 
 // Camera instance
 static Camera g_camera;
-static bool g_mouseMiddleDown = false;
 static bool g_showWireframe = false;
 // Program handle provided by Renderer
 static GLuint g_prog = 0;
@@ -141,9 +141,9 @@ static void framebuffer_size_callback(GLFWwindow* /*w*/, int w, int h) {
     glViewport(0,0,w,h);
 }
 
-static void scroll_callback(GLFWwindow* /*w*/, double /*xoff*/, double yoff) {
-    g_camera.onScroll(yoff);
-}
+bool g_useFixedTimestep = false;
+float g_fixedTimestep = 1.0f / 60.0f;
+float g_timeAccumulator = 0.0f;
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
@@ -161,7 +161,8 @@ int main(int argc, char** argv) {
     if(!window){ std::cerr << "Failed to create window\n"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    glfwSetScrollCallback(window, scroll_callback);
+    // Camera now manages scroll events itself
+    g_camera.installCallbacks(window);
 
     if(!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)){
         std::cerr << "Failed to initialize GLAD\n"; return -1;
@@ -219,6 +220,9 @@ int main(int argc, char** argv) {
     Scene scene;
     bool recordOnly = false; // if true, only increment spawn counter without creating meshes/entities
 
+    // Animator: leave empty; user can add animations via Tools panel or code
+    // g_animator.addRotationAnimation(...)
+
     // Docking state - docking is disabled in this build; windows are regular ImGui windows
     // bool dock_initialized = false;
     // (docking removed) 
@@ -256,7 +260,7 @@ int main(int argc, char** argv) {
 
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("View")) {
+            if (ImGui::BeginMenu("View") ) {
                 ImGui::MenuItem("Wireframe", NULL, &g_showWireframe);
                 ImGui::MenuItem("Use ImGuizmo", NULL, &g_useImGuizmo);
                 ImGui::MenuItem("Show numeric fields", NULL, &g_showNumericWidgets);
@@ -315,6 +319,18 @@ int main(int argc, char** argv) {
 
             DrawViewportWindow(vctx);
             ImGui::End(); // Viewport
+        }
+
+        // Update animator: either use fixed timestep accumulator or ImGui::GetIO().DeltaTime
+        float dt = ImGui::GetIO().DeltaTime;
+        if(g_useFixedTimestep) {
+            g_timeAccumulator += dt;
+            while(g_timeAccumulator >= g_fixedTimestep) {
+                g_animator.update(scene, g_fixedTimestep);
+                g_timeAccumulator -= g_fixedTimestep;
+            }
+        } else {
+            if(dt > 0.0f) g_animator.update(scene, dt);
         }
 
         // Prepare full-window GL state for ImGui rendering

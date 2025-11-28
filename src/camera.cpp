@@ -1,6 +1,8 @@
 #include "camera.h"
+#include "log.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
+#include <iostream>
 
 Camera::Camera() {}
 
@@ -84,4 +86,44 @@ void Camera::handleViewportInput(GLFWwindow* window, bool mouseOnViewport) {
         if(middleDown) endMiddleDrag();
         middleDown = false;
     }
+}
+
+void Camera::installCallbacks(GLFWwindow* window) {
+    // store this pointer in window user pointer so static callbacks can retrieve it
+    glfwSetWindowUserPointer(window, this);
+    glfwSetScrollCallback(window, Camera::glfwScrollCallback);
+    glfwSetMouseButtonCallback(window, Camera::glfwMouseButtonCallback);
+    glfwSetCursorPosCallback(window, Camera::glfwCursorPosCallback);
+}
+
+void Camera::onMouseButton(int button, int action, int mods) {
+    // no-op for now; handler present for future expansion
+}
+
+void Camera::onCursorPos(double xpos, double ypos) {
+    if(dragging_) {
+        bool alt = false; // we don't have mods here easily; leave update via handleViewportInput for now
+        updateMiddleDrag(glm::vec2((float)xpos, (float)ypos), alt);
+    }
+}
+
+void Camera::glfwScrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
+    void* ptr = glfwGetWindowUserPointer(window);
+    if(!ptr) return;
+    Camera* cam = static_cast<Camera*>(ptr);
+    cam->onScroll(yoffset);
+}
+
+void Camera::glfwMouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+    void* ptr = glfwGetWindowUserPointer(window);
+    if(!ptr) return;
+    Camera* cam = static_cast<Camera*>(ptr);
+    cam->onMouseButton(button, action, mods);
+}
+
+void Camera::glfwCursorPosCallback(GLFWwindow* window, double xpos, double ypos) {
+    void* ptr = glfwGetWindowUserPointer(window);
+    if(!ptr) return;
+    Camera* cam = static_cast<Camera*>(ptr);
+    cam->onCursorPos(xpos, ypos);
 }

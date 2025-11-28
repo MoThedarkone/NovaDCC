@@ -82,7 +82,8 @@ void DrawViewportWindow(ViewportContext& ctx) {
 
         // Spawn at origin when requested
         if(ctx.spawnPending && *ctx.spawnPending) {
-            glm::vec3 pos(0.0f, 0.5f, 0.0f);
+            // spawn exactly at world origin
+            glm::vec3 pos(0.0f, 0.0f, 0.0f);
             ctx.scene->addPrimitive(*ctx.spawnType, pos);
             *ctx.spawnPending = false;
         }
@@ -94,7 +95,15 @@ void DrawViewportWindow(ViewportContext& ctx) {
             if(active) {
                 if(!*ctx.imguizmoActive) { *ctx.imguizmoActive = true; *ctx.imguizmoEntity = ctx.scene->getSelectedId(); *ctx.imguizmoBefore = ctx.scene->getEntityTransform(*ctx.imguizmoEntity); }
             } else {
-                if(*ctx.imguizmoActive) { Scene::Transform after = ctx.scene->getEntityTransform(*ctx.imguizmoEntity); ctx.scene->pushCommand(std::unique_ptr<Scene::Command>(new Scene::TransformCommand(*ctx.imguizmoEntity, *ctx.imguizmoBefore, after))); *ctx.imguizmoActive = false; }
+                if(*ctx.imguizmoActive) {
+                    Scene::Transform after = ctx.scene->getEntityTransform(*ctx.imguizmoEntity);
+                    // only push if something actually changed
+                    const Scene::Transform& before = *ctx.imguizmoBefore;
+                    if(after.position != before.position || after.rotation != before.rotation || after.scale != before.scale) {
+                        ctx.scene->pushCommand(std::unique_ptr<Scene::Command>(new Scene::TransformCommand(*ctx.imguizmoEntity, *ctx.imguizmoBefore, after)));
+                    }
+                    *ctx.imguizmoActive = false;
+                }
             }
         } else {
             ctx.gizmo->drawGizmo(vp, glm::vec2(viewport_pos.x, viewport_pos.y), glm::vec2(viewport_size.x, viewport_size.y), *ctx.scene);

@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "log.h"
 #include <vector>
 #include <iostream>
 #include <glm/gtc/matrix_transform.hpp>
@@ -36,7 +37,7 @@ static void ensureFBO(int w, int h) {
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, s_fboDepth);
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if(status != GL_FRAMEBUFFER_COMPLETE) {
-        std::cerr << "Failed to create framebuffer, status: " << status << '\n';
+        LOG_ERROR("Failed to create framebuffer, status: " << status);
         if(s_fboDepth) { glDeleteRenderbuffers(1, &s_fboDepth); s_fboDepth = 0; }
         if(s_fboColor) { glDeleteTextures(1, &s_fboColor); s_fboColor = 0; }
         if(s_fbo) { glDeleteFramebuffers(1, &s_fbo); s_fbo = 0; }
@@ -50,7 +51,7 @@ static GLuint compileShader(GLenum type, const char* src) {
     glShaderSource(s, 1, &src, nullptr);
     glCompileShader(s);
     GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if(!ok){ char log[1024]; glGetShaderInfoLog(s, sizeof(log), nullptr, log); std::cerr << "Shader compile error: " << log << '\n'; }
+    if(!ok){ char logbuf[1024]; glGetShaderInfoLog(s, sizeof(logbuf), nullptr, logbuf); LOG_ERROR("Shader compile error: " << logbuf); }
     return s;
 }
 static GLuint createProgram(const char* vs, const char* fs) {
@@ -61,7 +62,7 @@ static GLuint createProgram(const char* vs, const char* fs) {
     glAttachShader(prog, fsid);
     glLinkProgram(prog);
     GLint ok = 0; glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if(!ok){ char log[1024]; glGetProgramInfoLog(prog, sizeof(log), nullptr, log); std::cerr << "Program link error: " << log << '\n'; }
+    if(!ok){ char logbuf[1024]; glGetProgramInfoLog(prog, sizeof(logbuf), nullptr, logbuf); LOG_ERROR("Program link error: " << logbuf); }
     glDeleteShader(vsid); glDeleteShader(fsid);
     return prog;
 }
@@ -174,10 +175,9 @@ void drawSelectionBox(const glm::mat4& vp, const SceneEntity* ent) {
     // transform corners by model matrix to world then project with vp
     std::vector<float> lines;
     auto pushLine = [&](const glm::vec3& a, const glm::vec3& b){
-        glm::vec4 aw = model * glm::vec4(a, 1.0f);
-        glm::vec4 bw = model * glm::vec4(b, 1.0f);
-        lines.push_back(aw.x); lines.push_back(aw.y); lines.push_back(aw.z);
-        lines.push_back(bw.x); lines.push_back(bw.y); lines.push_back(bw.z);
+        // push local-space positions; shader will apply uMVP (vp * model) so do not pre-multiply here
+        lines.push_back(a.x); lines.push_back(a.y); lines.push_back(a.z);
+        lines.push_back(b.x); lines.push_back(b.y); lines.push_back(b.z);
     };
 
     // edges

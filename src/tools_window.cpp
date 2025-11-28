@@ -1,5 +1,6 @@
 #include "tools_window.h"
 #include "gizmo_controller.h"
+#include "animator.h"
 #include <cstring>
 #include <functional>
 
@@ -74,7 +75,46 @@ void DrawToolsWindow(Scene& scene,
             scl.z = std::max(0.0001f, scl.z);
             scene.setSelectedScale(scl);
         }
+
+        // Animator controls for selected entity
+        ImGui::Separator();
+        ImGui::Text("Animator");
+        static float spinSpeed = 45.0f;
+        ImGui::DragFloat("Spin speed (deg/s)", &spinSpeed, 1.0f, -360.0f, 360.0f);
+        if(ImGui::Button("Start spin on selected")) {
+            g_animator.addRotationAnimation(selEnt->id, glm::vec3(0.0f,1.0f,0.0f), spinSpeed);
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Stop spin on selected")) {
+            g_animator.removeAnimationsForEntity(selEnt->id);
+        }
+
+        // Translate/Scale quick adds
+        static glm::vec3 translateVel = glm::vec3(0.0f, 0.0f, 0.0f);
+        ImGui::DragFloat3("Translate vel (units/s)", &translateVel.x, 0.01f);
+        if(ImGui::Button("Start translate on selected")) { g_animator.addTranslateAnimation(selEnt->id, translateVel); }
+        ImGui::SameLine();
+        if(ImGui::Button("Stop translate on selected")) { g_animator.removeAnimationsForEntity(selEnt->id); }
+
+        static glm::vec3 scaleDelta = glm::vec3(0.0f, 0.0f, 0.0f);
+        ImGui::DragFloat3("Scale delta (per s)", &scaleDelta.x, 0.01f);
+        if(ImGui::Button("Start scale on selected")) { g_animator.addScaleAnimation(selEnt->id, scaleDelta); }
+        ImGui::SameLine();
+        if(ImGui::Button("Stop scale on selected")) { g_animator.removeAnimationsForEntity(selEnt->id); }
     } else ImGui::TextDisabled("No entity selected");
+
+    // Animator persistence and timestep controls
+    ImGui::Separator();
+    ImGui::Text("Animator settings");
+    static char savePath[260] = "animations.txt";
+    ImGui::InputText("Save path", savePath, sizeof(savePath));
+    if(ImGui::Button("Save animations")) { g_animator.saveToFile(savePath); }
+    ImGui::SameLine();
+    if(ImGui::Button("Load animations")) { g_animator.loadFromFile(savePath); }
+
+    ImGui::Checkbox("Use fixed animator timestep", &g_useFixedTimestep);
+    ImGui::SameLine();
+    ImGui::DragFloat("Fixed timestep (s)", &g_fixedTimestep, 0.001f, 0.001f, 0.5f);
 
     if(showToolOptions) {
         ImGui::Text("Gizmo");
