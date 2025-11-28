@@ -11,3 +11,9 @@ Notes:
 - Primitive generators (cube, sphere, cylinder, plane) are implemented in `src/primitive_factory.*`.
 - After finishing any remaining cleanup (debug prints, selection box), run a full build and smoke test.
 - I can remove debug prints and make a cleanup commit; tell me if you want that done now.
+
+
+
+•	Tweak preview scale/orientation per primitive type (so cubes sit square on surfaces, planes lay flat).
+•	Add optional surface-offset (place on surface + half-height).
+•	Improve BVH by adding world-space AABB correctness and fast rejection.

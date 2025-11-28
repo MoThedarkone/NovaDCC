@@ -24,6 +24,19 @@ static int s_fbo_h = 0;
 SpawnPlacementMode g_spawnPlacementMode = SpawnPlacementMode::Origin;
 // Align spawned object to surface normal (defined here to back extern)
 bool g_spawnAlignToNormal = false;
+// Apply half-height surface offset when spawning/preview
+bool g_spawnApplyOffset = false;
+
+// Per-primitive preview scales and offset multipliers (defined here to back externs)
+float g_previewScaleCube = 0.5f;
+float g_previewScaleSphere = 0.5f;
+float g_previewScaleCylinder = 0.5f;
+float g_previewScalePlane = 1.0f;
+
+float g_offsetCube = 1.0f;
+float g_offsetSphere = 1.0f;
+float g_offsetCylinder = 1.0f;
+float g_offsetPlane = 0.001f;
 
 static void ensureFBO(int w, int h) {
     if(w <= 0 || h <= 0) return;
@@ -206,27 +219,62 @@ void DrawViewportWindow(ViewportContext& ctx) {
             GLint col = glGetUniformLocation(*ctx.prog, "uColor");
             // choose mesh and scale
             primitives::MeshGL* pm = nullptr;
+            float previewScale = 0.5f; // default uniform preview scale
+            bool orientToNormal = g_spawnAlignToNormal;
             switch(*ctx.spawnType) {
-                case primitives::PrimitiveType::Cube: pm = &s_cubePreview; break;
-                case primitives::PrimitiveType::Sphere: pm = &s_spherePreview; break;
-                case primitives::PrimitiveType::Cylinder: pm = &s_cylinderPreview; break;
-                case primitives::PrimitiveType::Plane: pm = &s_planePreview; break;
+                case primitives::PrimitiveType::Cube: pm = &s_cubePreview; previewScale = g_previewScaleCube; break;
+                case primitives::PrimitiveType::Sphere: pm = &s_spherePreview; previewScale = g_previewScaleSphere; break;
+                case primitives::PrimitiveType::Cylinder: pm = &s_cylinderPreview; previewScale = g_previewScaleCylinder; break;
+                case primitives::PrimitiveType::Plane: pm = &s_planePreview; previewScale = g_previewScalePlane; break;
             }
             if(pm) {
-                glm::mat4 model = glm::translate(glm::mat4(1.0f), previewPos);
-                // orient to normal if requested
-                if(g_spawnAlignToNormal) {
+                // compute model transform per-primitive so preview sits correctly on the surface
+                glm::mat4 model = glm::mat4(1.0f);
+                // default rotation: align up to normal if requested
+                glm::quat rotQ = glm::quat(glm::vec3(0.0f));
+                if(orientToNormal) {
                     glm::vec3 up = glm::vec3(0,1,0);
-                    glm::vec3 axis = glm::cross(up, previewNormal);
-                    float dot = glm::dot(up, previewNormal);
-                    float angle = acosf(glm::clamp(dot, -1.0f, 1.0f));
-                    if(glm::length(axis) > 1e-6f) {
-                        axis = glm::normalize(axis);
-                        model *= glm::toMat4(glm::angleAxis(angle, axis));
+                    // if normal nearly aligned, skip
+                    if(glm::length(glm::cross(up, previewNormal)) > 1e-6f) {
+                        glm::vec3 axis = glm::normalize(glm::cross(up, previewNormal));
+                        float dot = glm::dot(up, previewNormal);
+                        float angle = acosf(glm::clamp(dot, -1.0f, 1.0f));
+                        rotQ = glm::angleAxis(angle, axis);
+                    } else {
+                        // normals nearly equal or opposite
+                        if(glm::dot(up, previewNormal) < 0.0f) rotQ = glm::angleAxis(glm::pi<float>(), glm::vec3(1,0,0));
                     }
                 }
-                // small uniform scale for preview
-                model = glm::scale(model, glm::vec3(0.5f));
+
+                // compute offset so primitive sits on the surface (half-height/radius)
+                glm::vec3 offset = glm::vec3(0.0f);
+                if(g_spawnApplyOffset) {
+                    if(*ctx.spawnType == primitives::PrimitiveType::Cube) {
+                        // cube in generator spans [-1,1] => half-height 1.0
+                        float authHalf = 1.0f;
+                        offset = previewNormal * (authHalf * previewScale * g_offsetCube);
+                    } else if(*ctx.spawnType == primitives::PrimitiveType::Sphere) {
+                        // sphere radius 1.0
+                        float authRadius = 1.0f;
+                        offset = previewNormal * (authRadius * previewScale * g_offsetSphere);
+                    } else if(*ctx.spawnType == primitives::PrimitiveType::Cylinder) {
+                        // cylinder generator used height=2.0 -> half-height = 1.0
+                        float authHalf = 1.0f;
+                        offset = previewNormal * (authHalf * previewScale * g_offsetCylinder);
+                    } else if(*ctx.spawnType == primitives::PrimitiveType::Plane) {
+                        // plane lies on surface: small offset to avoid z-fight
+                        offset = previewNormal * g_offsetPlane;
+                    }
+                } else {
+                    // no offset
+                    offset = glm::vec3(0.0f);
+                }
+
+                // apply rotation then translation (rotate around origin then place)
+                model *= glm::toMat4(rotQ);
+                model = glm::translate(model, previewPos + offset);
+                model = glm::scale(model, glm::vec3(previewScale));
+
                 glm::mat4 mvp = vp * model;
                 glUniformMatrix4fv(loc, 1, GL_FALSE, &mvp[0][0]);
                 // draw wireframe with blending
@@ -281,7 +329,18 @@ void DrawViewportWindow(ViewportContext& ctx) {
                 int id = ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
                 *ctx.spawnPending = false;
             } else if(!*ctx.spawnPending) {
-                int id = ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
+                // apply per-primitive offset when creating so object sits on surface
+                glm::vec3 offset(0.0f);
+                float spawnScale = 1.0f; // actual entity scale remains 1.0 by default
+                if(g_spawnApplyOffset) {
+                    if(*ctx.spawnType == primitives::PrimitiveType::Cube) offset = spawnNormal * (1.0f * g_offsetCube * spawnScale);
+                    else if(*ctx.spawnType == primitives::PrimitiveType::Sphere) offset = spawnNormal * (1.0f * g_offsetSphere * spawnScale);
+                    else if(*ctx.spawnType == primitives::PrimitiveType::Cylinder) offset = spawnNormal * (1.0f * g_offsetCylinder * spawnScale);
+                    else if(*ctx.spawnType == primitives::PrimitiveType::Plane) offset = spawnNormal * g_offsetPlane;
+                } else {
+                    offset = glm::vec3(0.0f);
+                }
+                int id = ctx.scene->addPrimitive(*ctx.spawnType, spawnPos + offset);
                 // align to normal if requested
                 if(g_spawnAlignToNormal && id != 0) {
                     glm::quat q = glm::rotation(glm::vec3(0,1,0), spawnNormal);

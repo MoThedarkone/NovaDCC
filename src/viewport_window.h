@@ -47,6 +47,20 @@ extern SpawnPlacementMode g_spawnPlacementMode;
 // Align spawned object to surface normal
 extern bool g_spawnAlignToNormal;
 
+// Apply half-height surface offset when spawning/preview
+extern bool g_spawnApplyOffset;
+
+// Per-primitive preview scales and offset multipliers
+extern float g_previewScaleCube;
+extern float g_previewScaleSphere;
+extern float g_previewScaleCylinder;
+extern float g_previewScalePlane;
+
+extern float g_offsetCube;
+extern float g_offsetSphere;
+extern float g_offsetCylinder;
+extern float g_offsetPlane;
+
 // Draw the viewport UI, render scene into an offscreen FBO and handle gizmo/spawn logic.
 // The function preserves behavior of original code and uses values supplied via ViewportContext.
 void DrawViewportWindow(ViewportContext& ctx);

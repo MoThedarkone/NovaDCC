@@ -39,6 +39,23 @@ void DrawToolsWindow(Scene& scene,
     }
     ImGui::SameLine();
     ImGui::Checkbox("Align spawn to normal", &g_spawnAlignToNormal);
+    ImGui::SameLine();
+    ImGui::Checkbox("Apply surface offset", &g_spawnApplyOffset);
+
+    // Per-primitive preview scale controls
+    if(ImGui::CollapsingHeader("Preview settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Preview scales");
+        ImGui::SliderFloat("Cube scale", &g_previewScaleCube, 0.05f, 2.0f);
+        ImGui::SliderFloat("Sphere scale", &g_previewScaleSphere, 0.05f, 2.0f);
+        ImGui::SliderFloat("Cylinder scale", &g_previewScaleCylinder, 0.05f, 2.0f);
+        ImGui::SliderFloat("Plane scale", &g_previewScalePlane, 0.1f, 5.0f);
+        ImGui::Separator();
+        ImGui::Text("Offset multipliers (applies when 'Apply surface offset' is enabled)");
+        ImGui::SliderFloat("Cube offset", &g_offsetCube, 0.0f, 2.0f);
+        ImGui::SliderFloat("Sphere offset", &g_offsetSphere, 0.0f, 2.0f);
+        ImGui::SliderFloat("Cylinder offset", &g_offsetCylinder, 0.0f, 2.0f);
+        ImGui::SliderFloat("Plane offset", &g_offsetPlane, 0.0f, 0.1f);
+    }
 
     if(ImGui::Button("Cube")) {
         spawnType = primitives::PrimitiveType::Cube;
