@@ -37,6 +37,8 @@ void DrawToolsWindow(Scene& scene,
     if(ImGui::Combo("Spawn Mode", &modeIdx, modes, IM_ARRAYSIZE(modes))) {
         g_spawnPlacementMode = (SpawnPlacementMode)modeIdx;
     }
+    ImGui::SameLine();
+    ImGui::Checkbox("Align spawn to normal", &g_spawnAlignToNormal);
 
     if(ImGui::Button("Cube")) {
         spawnType = primitives::PrimitiveType::Cube;

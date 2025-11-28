@@ -2,6 +2,7 @@
 #include <glad/glad.h>
 #include <vector>
 #include <cmath>
+#include <algorithm>
 
 namespace primitives {
 
@@ -16,6 +17,7 @@ MeshGL::MeshGL(MeshGL&& other) noexcept {
     aabbMin = other.aabbMin; aabbMax = other.aabbMax;
     cpuPositions = std::move(other.cpuPositions);
     cpuIndices = std::move(other.cpuIndices);
+    bvhNodes = std::move(other.bvhNodes);
     other.vao = other.vbo = other.ebo = 0; other.indexCount = 0;
 }
 
@@ -28,14 +30,82 @@ MeshGL& MeshGL::operator=(MeshGL&& other) noexcept {
         aabbMin = other.aabbMin; aabbMax = other.aabbMax;
         cpuPositions = std::move(other.cpuPositions);
         cpuIndices = std::move(other.cpuIndices);
+        bvhNodes = std::move(other.bvhNodes);
         other.vao = other.vbo = other.ebo = 0; other.indexCount = 0;
     }
     return *this;
 }
 
+// Simple helper to compute triangle centroid bounding box split
+static void computeTriangleAABB(const std::vector<glm::vec3>& pos, const std::vector<unsigned int>& idx, int triStart, int triCount, glm::vec3& outMin, glm::vec3& outMax, glm::vec3& outCentroidMin, glm::vec3& outCentroidMax) {
+    outMin = glm::vec3(FLT_MAX); outMax = glm::vec3(-FLT_MAX);
+    outCentroidMin = glm::vec3(FLT_MAX); outCentroidMax = glm::vec3(-FLT_MAX);
+    for(int t=0;t<triCount;++t) {
+        int i0 = idx[(triStart+t)*3+0];
+        int i1 = idx[(triStart+t)*3+1];
+        int i2 = idx[(triStart+t)*3+2];
+        glm::vec3 v0 = pos[i0]; glm::vec3 v1 = pos[i1]; glm::vec3 v2 = pos[i2];
+        glm::vec3 triMin = glm::min(v0, glm::min(v1,v2));
+        glm::vec3 triMax = glm::max(v0, glm::max(v1,v2));
+        outMin = glm::min(outMin, triMin);
+        outMax = glm::max(outMax, triMax);
+        glm::vec3 centroid = (v0 + v1 + v2) / 3.0f;
+        outCentroidMin = glm::min(outCentroidMin, centroid);
+        outCentroidMax = glm::max(outCentroidMax, centroid);
+    }
+}
+
+// Build BVH recursively into mesh.bvhNodes. Node stores [start,count] in primitive (triangle) list stored as contiguous idx triples.
+static int buildBVHRecursive(MeshGL& mesh, int triStart, int triCount) {
+    MeshGL::BVHNode node;
+    glm::vec3 triMin, triMax, centMin, centMax;
+    computeTriangleAABB(mesh.cpuPositions, mesh.cpuIndices, triStart, triCount, triMin, triMax, centMin, centMax);
+    node.min = triMin; node.max = triMax; node.start = triStart; node.count = triCount; node.left = -1; node.right = -1;
+    int myIndex = (int)mesh.bvhNodes.size();
+    mesh.bvhNodes.push_back(node);
+    if(triCount <= 8) {
+        // leaf
+        return myIndex;
+    }
+    // choose split axis by centroid extent
+    glm::vec3 ext = centMax - centMin;
+    int axis = 0; if(ext.y > ext.x) axis = 1; if(ext.z > ext[axis]) axis = 2;
+    // partition triangles by centroid median
+    int mid = triStart + triCount/2;
+    // simple nth_element on indices of triangles by centroid
+    std::vector<int> triIndices(triCount);
+    for(int i=0;i<triCount;++i) triIndices[i] = triStart + i;
+    std::nth_element(triIndices.begin(), triIndices.begin() + triCount/2, triIndices.end(), [&](int a, int b){
+        glm::vec3 ca = (mesh.cpuPositions[mesh.cpuIndices[a*3+0]] + mesh.cpuPositions[mesh.cpuIndices[a*3+1]] + mesh.cpuPositions[mesh.cpuIndices[a*3+2]]) / 3.0f;
+        glm::vec3 cb = (mesh.cpuPositions[mesh.cpuIndices[b*3+0]] + mesh.cpuPositions[mesh.cpuIndices[b*3+1]] + mesh.cpuPositions[mesh.cpuIndices[b*3+2]]) / 3.0f;
+        return ca[axis] < cb[axis];
+    });
+    // create a temporary copy of triangle indices order
+    std::vector<unsigned int> newIdx;
+    newIdx.reserve(mesh.cpuIndices.size());
+    for(int ti : triIndices) {
+        newIdx.push_back(mesh.cpuIndices[ti*3+0]);
+        newIdx.push_back(mesh.cpuIndices[ti*3+1]);
+        newIdx.push_back(mesh.cpuIndices[ti*3+2]);
+    }
+    // replace the relevant range in cpuIndices
+    for(int i=0;i<triCount*3;++i) mesh.cpuIndices[triStart*3 + i] = newIdx[i];
+    int leftStart = triStart;
+    int leftCount = triCount/2;
+    int rightStart = triStart + leftCount;
+    int rightCount = triCount - leftCount;
+    int leftNode = buildBVHRecursive(mesh, leftStart, leftCount);
+    int rightNode = buildBVHRecursive(mesh, rightStart, rightCount);
+    // update this node's left/right children
+    mesh.bvhNodes[myIndex].left = leftNode;
+    mesh.bvhNodes[myIndex].right = rightNode;
+    mesh.bvhNodes[myIndex].start = triStart; mesh.bvhNodes[myIndex].count = triCount;
+    return myIndex;
+}
+
 void MeshGL::upload(const std::vector<float>& verts, const std::vector<unsigned int>& idx) {
     // compute AABB from vertex positions (assume verts.size() % 3 == 0)
-    cpuPositions.clear(); cpuIndices.clear();
+    cpuPositions.clear(); cpuIndices.clear(); bvhNodes.clear();
     if(!verts.empty()){
         glm::vec3 mn(verts[0], verts[1], verts[2]);
         glm::vec3 mx = mn;
@@ -53,6 +123,14 @@ void MeshGL::upload(const std::vector<float>& verts, const std::vector<unsigned 
     }
 
     cpuIndices = idx; // copy indices
+
+    // Build BVH over triangles (triCount)
+    int triCount = (int)cpuIndices.size() / 3;
+    if(triCount > 0) {
+        // ensure indices are grouped as triples starting at 0..triCount-1
+        // build simple recursive BVH
+        buildBVHRecursive(*this, 0, triCount);
+    }
 
     if (vao == 0) glGenVertexArrays(1, &vao);
     if (vbo == 0) glGenBuffers(1, &vbo);
@@ -73,6 +151,85 @@ void MeshGL::draw() const {
     glBindVertexArray(vao);
     glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
+}
+
+// Moller-Trumbore helper
+static bool rayTriangleIntersect(const glm::vec3& orig, const glm::vec3& dir, const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, float& t) {
+    const float EPSILON = 1e-8f;
+    glm::vec3 edge1 = v1 - v0;
+    glm::vec3 edge2 = v2 - v0;
+    glm::vec3 h = glm::cross(dir, edge2);
+    float a = glm::dot(edge1, h);
+    if(fabs(a) < EPSILON) return false;
+    float f = 1.0f / a;
+    glm::vec3 s = orig - v0;
+    float u = f * glm::dot(s, h);
+    if(u < 0.0f || u > 1.0f) return false;
+    glm::vec3 q = glm::cross(s, edge1);
+    float v = f * glm::dot(dir, q);
+    if(v < 0.0f || u + v > 1.0f) return false;
+    float tt = f * glm::dot(edge2, q);
+    if(tt > EPSILON) { t = tt; return true; }
+    return false;
+}
+
+// AABB intersection test
+static bool rayIntersectsAABB(const glm::vec3& orig, const glm::vec3& dir, const glm::vec3& minB, const glm::vec3& maxB, float& tmin_out, float& tmax_out) {
+    float tmin = (minB.x - orig.x) / dir.x; float tmax = (maxB.x - orig.x) / dir.x;
+    if(tmin > tmax) std::swap(tmin,tmax);
+    float tymin = (minB.y - orig.y) / dir.y; float tymax = (maxB.y - orig.y) / dir.y;
+    if(tymin > tymax) std::swap(tymin, tymax);
+    if((tmin > tymax) || (tymin > tmax)) return false;
+    if(tymin > tmin) tmin = tymin;
+    if(tymax < tmax) tmax = tymax;
+    float tzmin = (minB.z - orig.z) / dir.z; float tzmax = (maxB.z - orig.z) / dir.z;
+    if(tzmin > tzmax) std::swap(tzmin, tzmax);
+    if((tmin > tzmax) || (tzmin > tmax)) return false;
+    if(tzmin > tmin) tmin = tzmin;
+    if(tzmax < tmax) tmax = tzmax;
+    tmin_out = tmin; tmax_out = tmax;
+    return true;
+}
+
+bool meshRayIntersect(const MeshGL& mesh, const glm::mat4& model, const glm::vec3& orig, const glm::vec3& dir, float& outT, glm::vec3& outPoint) {
+    if(mesh.bvhNodes.empty()) return false;
+    // traverse BVH stack
+    float bestT = FLT_MAX; bool hit = false;
+    struct StackItem { int node; };
+    std::vector<StackItem> stack; stack.reserve(64);
+    stack.push_back({0});
+    while(!stack.empty()) {
+        int nodeIdx = stack.back().node; stack.pop_back();
+        const auto& node = mesh.bvhNodes[nodeIdx];
+        // Transform node AABB by model matrix (approx): transform corners
+        glm::vec3 nmin = glm::vec3(model * glm::vec4(node.min, 1.0f));
+        glm::vec3 nmax = glm::vec3(model * glm::vec4(node.max, 1.0f));
+        float tmin, tmax;
+        if(!rayIntersectsAABB(orig, dir, nmin, nmax, tmin, tmax)) continue;
+        if(tmin > bestT) continue;
+        if(node.left == -1 && node.right == -1) {
+            // leaf: test triangles in range
+            int triStart = node.start; int triCount = node.count;
+            for(int ti=0; ti<triCount; ++ti) {
+                int idx0 = mesh.cpuIndices[(triStart+ti)*3+0];
+                int idx1 = mesh.cpuIndices[(triStart+ti)*3+1];
+                int idx2 = mesh.cpuIndices[(triStart+ti)*3+2];
+                glm::vec3 v0 = glm::vec3(model * glm::vec4(mesh.cpuPositions[idx0], 1.0f));
+                glm::vec3 v1 = glm::vec3(model * glm::vec4(mesh.cpuPositions[idx1], 1.0f));
+                glm::vec3 v2 = glm::vec3(model * glm::vec4(mesh.cpuPositions[idx2], 1.0f));
+                float t;
+                if(rayTriangleIntersect(orig, dir, v0, v1, v2, t)) {
+                    if(t < bestT) { bestT = t; outPoint = orig + dir * t; hit = true; }
+                }
+            }
+        } else {
+            // push children
+            if(node.left != -1) stack.push_back({node.left});
+            if(node.right != -1) stack.push_back({node.right});
+        }
+    }
+    if(hit) { outT = bestT; return true; }
+    return false;
 }
 
 void makeCubeData(std::vector<float>& verts, std::vector<unsigned int>& idx) {

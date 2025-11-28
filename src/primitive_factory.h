@@ -23,6 +23,10 @@ struct MeshGL {
     std::vector<glm::vec3> cpuPositions;
     std::vector<unsigned int> cpuIndices;
 
+    // Simple BVH nodes for triangle acceleration
+    struct BVHNode { glm::vec3 min; glm::vec3 max; int start; int count; int left; int right; };
+    std::vector<BVHNode> bvhNodes;
+
     MeshGL() = default;
     ~MeshGL();
 
@@ -50,5 +54,8 @@ MeshGL createCubeMesh();
 MeshGL createSphereMesh(int segments = 24, int rings = 16);
 MeshGL createCylinderMesh(int segments = 24, float height = 2.0f);
 MeshGL createPlaneMesh(float size = 2.0f);
+
+// Ray-mesh intersection using BVH (model transforms local vertices to world)
+bool meshRayIntersect(const MeshGL& mesh, const glm::mat4& model, const glm::vec3& orig, const glm::vec3& dir, float& outT, glm::vec3& outPoint);
 
 } // namespace primitives

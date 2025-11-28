@@ -44,6 +44,9 @@ enum class SpawnPlacementMode { Origin = 0, ClickPlane = 1, ClickMesh = 2 };
 // Global control to select spawn placement mode (defined in main.cpp)
 extern SpawnPlacementMode g_spawnPlacementMode;
 
+// Align spawned object to surface normal
+extern bool g_spawnAlignToNormal;
+
 // Draw the viewport UI, render scene into an offscreen FBO and handle gizmo/spawn logic.
 // The function preserves behavior of original code and uses values supplied via ViewportContext.
 void DrawViewportWindow(ViewportContext& ctx);

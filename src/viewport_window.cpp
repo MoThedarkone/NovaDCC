@@ -9,6 +9,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <glm/gtx/euler_angles.hpp>
 #include <cfloat>
 #include <iostream>
 
@@ -21,6 +22,8 @@ static int s_fbo_h = 0;
 
 // Extern spawn placement mode
 SpawnPlacementMode g_spawnPlacementMode = SpawnPlacementMode::Origin;
+// Align spawned object to surface normal (defined here to back extern)
+bool g_spawnAlignToNormal = false;
 
 static void ensureFBO(int w, int h) {
     if(w <= 0 || h <= 0) return;
@@ -98,8 +101,8 @@ static bool rayIntersectsTriangle(const glm::vec3& orig, const glm::vec3& dir, c
     return false;
 }
 
-// Find closest intersection of ray with all entities' meshes; returns true if hit and sets outPoint and hitEntityId
-static bool rayIntersectSceneMeshes(Scene& scene, const glm::vec3& origin, const glm::vec3& dir, glm::vec3& outPoint, int& hitEntityId) {
+// Find closest intersection of ray with all entities' meshes; returns true if hit and sets outPoint, outNormal and hitEntityId
+static bool rayIntersectSceneMeshes(Scene& scene, const glm::vec3& origin, const glm::vec3& dir, glm::vec3& outPoint, glm::vec3& outNormal, int& hitEntityId) {
     float bestT = FLT_MAX;
     bool hitAny = false;
     for(const auto& ent : scene.entities()) {
@@ -111,12 +114,6 @@ static bool rayIntersectSceneMeshes(Scene& scene, const glm::vec3& origin, const
         glm::quat q = glm::quat(glm::radians(ent.rotation));
         model *= glm::toMat4(q);
         model = glm::scale(model, ent.scale);
-        // check AABB first in world space (compute world AABB corners)
-        glm::vec4 mn4 = model * glm::vec4(ent.mesh->aabbMin, 1.0f);
-        glm::vec4 mx4 = model * glm::vec4(ent.mesh->aabbMax, 1.0f);
-        glm::vec3 mn = glm::vec3(mn4);
-        glm::vec3 mx = glm::vec3(mx4);
-        // quick AABB ray reject could be added here
         const auto& pos = ent.mesh->cpuPositions;
         const auto& idx = ent.mesh->cpuIndices;
         for(size_t i=0;i+2<idx.size(); i+=3) {
@@ -125,7 +122,12 @@ static bool rayIntersectSceneMeshes(Scene& scene, const glm::vec3& origin, const
             glm::vec3 v2 = glm::vec3(model * glm::vec4(pos[idx[i+2]], 1.0f));
             float t,u,v;
             if(rayIntersectsTriangle(origin, dir, v0, v1, v2, t, u, v)) {
-                if(t < bestT) { bestT = t; outPoint = origin + dir * t; hitEntityId = ent.id; hitAny = true; }
+                if(t < bestT) {
+                    bestT = t; outPoint = origin + dir * t; hitEntityId = ent.id; hitAny = true;
+                    // compute triangle normal
+                    glm::vec3 n = glm::normalize(glm::cross(v1 - v0, v2 - v0));
+                    outNormal = n;
+                }
             }
         }
     }
@@ -148,6 +150,20 @@ void DrawViewportWindow(ViewportContext& ctx) {
     GLuint fboToUse = s_fbo;
     GLuint fboColor = s_fboColor;
 
+    // Static preview meshes for ghost placement
+    static bool s_previewInit = false;
+    static primitives::MeshGL s_cubePreview;
+    static primitives::MeshGL s_spherePreview;
+    static primitives::MeshGL s_cylinderPreview;
+    static primitives::MeshGL s_planePreview;
+    if(!s_previewInit) {
+        s_cubePreview = primitives::createCubeMesh();
+        s_spherePreview = primitives::createSphereMesh();
+        s_cylinderPreview = primitives::createCylinderMesh();
+        s_planePreview = primitives::createPlaneMesh();
+        s_previewInit = true;
+    }
+
     if(fboToUse) {
         glBindFramebuffer(GL_FRAMEBUFFER, fboToUse);
         glViewport(0,0,s_fbo_w,s_fbo_h);
@@ -165,9 +181,73 @@ void DrawViewportWindow(ViewportContext& ctx) {
         Renderer::renderGrid(vp);
         ctx.scene->drawAll(*ctx.prog, vp);
 
+        // compute live preview position if armed and in click modes
+        bool havePreview = false;
+        glm::vec3 previewPos(0.0f);
+        glm::vec3 previewNormal(0.0f, 1.0f, 0.0f);
+        if(*ctx.spawnPending && g_spawnPlacementMode != SpawnPlacementMode::Origin && mouseOnViewport) {
+            ImVec2 m = ImGui::GetIO().MousePos;
+            glm::vec2 sp = glm::vec2(m.x, m.y);
+            glm::vec3 rayOrig, rayDir;
+            screenPointToRay(sp, viewport_pos, viewport_size, view, proj, rayOrig, rayDir);
+            if(g_spawnPlacementMode == SpawnPlacementMode::ClickPlane) {
+                glm::vec3 hit;
+                if(intersectRayPlane(rayOrig, rayDir, 0.0f, hit)) { previewPos = hit; havePreview = true; previewNormal = glm::vec3(0,1,0); }
+            } else if(g_spawnPlacementMode == SpawnPlacementMode::ClickMesh) {
+                glm::vec3 hit; glm::vec3 nrm; int entId = 0;
+                if(rayIntersectSceneMeshes(*ctx.scene, rayOrig, rayDir, hit, nrm, entId)) { previewPos = hit; previewNormal = nrm; havePreview = true; }
+            }
+        }
+
+        // Draw preview ghost if available
+        if(havePreview) {
+            // use program and set uniforms
+            GLint loc = glGetUniformLocation(*ctx.prog, "uMVP");
+            GLint col = glGetUniformLocation(*ctx.prog, "uColor");
+            // choose mesh and scale
+            primitives::MeshGL* pm = nullptr;
+            switch(*ctx.spawnType) {
+                case primitives::PrimitiveType::Cube: pm = &s_cubePreview; break;
+                case primitives::PrimitiveType::Sphere: pm = &s_spherePreview; break;
+                case primitives::PrimitiveType::Cylinder: pm = &s_cylinderPreview; break;
+                case primitives::PrimitiveType::Plane: pm = &s_planePreview; break;
+            }
+            if(pm) {
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), previewPos);
+                // orient to normal if requested
+                if(g_spawnAlignToNormal) {
+                    glm::vec3 up = glm::vec3(0,1,0);
+                    glm::vec3 axis = glm::cross(up, previewNormal);
+                    float dot = glm::dot(up, previewNormal);
+                    float angle = acosf(glm::clamp(dot, -1.0f, 1.0f));
+                    if(glm::length(axis) > 1e-6f) {
+                        axis = glm::normalize(axis);
+                        model *= glm::toMat4(glm::angleAxis(angle, axis));
+                    }
+                }
+                // small uniform scale for preview
+                model = glm::scale(model, glm::vec3(0.5f));
+                glm::mat4 mvp = vp * model;
+                glUniformMatrix4fv(loc, 1, GL_FALSE, &mvp[0][0]);
+                // draw wireframe with blending
+                GLboolean prevBlend = glIsEnabled(GL_BLEND);
+                GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
+                glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                if(!prevDepth) glEnable(GL_DEPTH_TEST);
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                glUniform3f(col, 0.9f, 0.9f, 0.2f);
+                pm->draw();
+                // restore
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                if(!prevBlend) glDisable(GL_BLEND);
+                if(!prevDepth) glDisable(GL_DEPTH_TEST);
+            }
+        }
+
         // Spawn when requested
         if(ctx.spawnPending && *ctx.spawnPending) {
             glm::vec3 spawnPos(0.0f);
+            glm::vec3 spawnNormal(0.0f, 1.0f, 0.0f);
             if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
                 spawnPos = glm::vec3(0.0f);
             } else if(g_spawnPlacementMode == SpawnPlacementMode::ClickPlane) {
@@ -178,7 +258,7 @@ void DrawViewportWindow(ViewportContext& ctx) {
                     glm::vec3 rayOrigin, rayDir;
                     screenPointToRay(sp, viewport_pos, viewport_size, view, proj, rayOrigin, rayDir);
                     glm::vec3 hit;
-                    if(intersectRayPlane(rayOrigin, rayDir, 0.0f, hit)) spawnPos = hit; else spawnPos = glm::vec3(0.0f);
+                    if(intersectRayPlane(rayOrigin, rayDir, 0.0f, hit)) { spawnPos = hit; spawnNormal = glm::vec3(0,1,0); } else spawnPos = glm::vec3(0.0f);
                     *ctx.spawnPending = false;
                 } else {
                     // not clicked yet; wait
@@ -189,11 +269,8 @@ void DrawViewportWindow(ViewportContext& ctx) {
                     glm::vec2 sp = glm::vec2(m.x, m.y);
                     glm::vec3 rayOrigin, rayDir;
                     screenPointToRay(sp, viewport_pos, viewport_size, view, proj, rayOrigin, rayDir);
-                    glm::vec3 hit;
-                    int hitEnt = 0;
-                    if(rayIntersectSceneMeshes(*ctx.scene, rayOrigin, rayDir, hit, hitEnt)) {
-                        spawnPos = hit;
-                    } else spawnPos = glm::vec3(0.0f);
+                    glm::vec3 hit; glm::vec3 nrm; int hitEnt = 0;
+                    if(rayIntersectSceneMeshes(*ctx.scene, rayOrigin, rayDir, hit, nrm, hitEnt)) { spawnPos = hit; spawnNormal = nrm; } else spawnPos = glm::vec3(0.0f);
                     *ctx.spawnPending = false;
                 } else {
                     // wait for click
@@ -201,10 +278,18 @@ void DrawViewportWindow(ViewportContext& ctx) {
             }
             // Only add if spawnPending was cleared (i.e., we had a click) or Origin mode
             if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
-                ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
+                int id = ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
                 *ctx.spawnPending = false;
             } else if(!*ctx.spawnPending) {
-                ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
+                int id = ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
+                // align to normal if requested
+                if(g_spawnAlignToNormal && id != 0) {
+                    glm::quat q = glm::rotation(glm::vec3(0,1,0), spawnNormal);
+                    glm::vec3 euler = glm::degrees(glm::eulerAngles(q));
+                    Scene::Transform t = ctx.scene->getEntityTransform(id);
+                    t.rotation = euler;
+                    ctx.scene->setEntityTransform(id, t);
+                }
             }
         }
 
