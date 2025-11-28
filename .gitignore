@@ -34,3 +34,8 @@ external/vcpkg/packages/
 
 # Logs
 *.log
+external/vcpkg/
+external/assimp_build/
+external/assimp_install/
+external/assimp_src/
+build/

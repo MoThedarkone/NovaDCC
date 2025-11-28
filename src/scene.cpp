@@ -19,21 +19,24 @@ struct AddCommand : Scene::Command {
 Scene::Scene() {}
 Scene::~Scene() {}
 
+int Scene::addEntity(SceneEntity&& ent) {
+    ent.id = m_nextId++;
+    m_selectedId = ent.id;
+    m_entities.push_back(std::move(ent));
+    m_spawnCount++;
+    return m_selectedId;
+}
+
+// Ensure addPrimitive delegates to addEntity to centralize logic
 int Scene::addPrimitive(primitives::PrimitiveType type, const glm::vec3& pos) {
     SceneEntity e;
-    e.id = m_nextId++;
     e.type = type;
     if(type == primitives::PrimitiveType::Cube) e.mesh = std::make_unique<primitives::MeshGL>(primitives::createCubeMesh());
     else if(type == primitives::PrimitiveType::Sphere) e.mesh = std::make_unique<primitives::MeshGL>(primitives::createSphereMesh());
     else if(type == primitives::PrimitiveType::Cylinder) e.mesh = std::make_unique<primitives::MeshGL>(primitives::createCylinderMesh());
     else if(type == primitives::PrimitiveType::Plane) e.mesh = std::make_unique<primitives::MeshGL>(primitives::createPlaneMesh());
     e.position = pos;
-    m_entities.push_back(std::move(e));
-    // selection becomes this entity
-    m_selectedId = m_entities.back().id;
-    // increment spawn counter
-    m_spawnCount++;
-    return m_selectedId;
+    return addEntity(std::move(e));
 }
 
 int Scene::addCube(const glm::vec3& pos) { return addPrimitive(primitives::PrimitiveType::Cube, pos); }

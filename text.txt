@@ -1,31 +1,13 @@
 Remaining work / To do
 
-Completed (removed from active list):
-- Cube implemented (`src/primitive_factory.*`).
-- Selection implemented (`Scene::selectEntity`, `Scene::getSelectedId`, entity listing UI).
-- Translation gizmo implemented (`Gizmo::translationWidget` and onscreen drag in `gizmo_draw.cpp`).
-- ImGuizmo integrated and `GizmoController` added (`src/gizmo_controller.*`) — works with offscreen FBO and fallback.
-- Transform gizmo (translate/rotate/scale) wired to scene transforms and undo/redo via `Scene::TransformCommand` push on manipulation end.
-- UI controls for create/select/delete wired (Cube button, Delete button, entity list selection).
-- Tools UI moved out of `main.cpp` to `src/tools_window.*` and pin helper moved to `src/ui_helpers.*`.
-- Basic camera controls (orbit/pan/zoom) implemented and `Camera` integration present.
-
-Active remaining tasks:
-- Primitive factory: implement `sphere`, `cylinder`, `plane` in `src/primitive_factory.*`.
-
-Recommendations / next steps:
-- Remove temporary debug prints (e.g. in `src/gizmo_controller.cpp`).
-- Compute mesh bounds and tighten `Renderer::drawSelectionBox` to use real mesh AABB.
-- Extract other UI windows (Assets/Bottom/Viewport) into `src/ui/` files for clarity.
-- Add a resource manager for shaders/textures and a small Undo/Command module if needed.
-- Optionally add `animator.h`/`animator.cpp` skeleton for future animation work.
 
 Refactor / Organization Plan (status)
-- Step A (renderer): partially done — `Renderer` exists and is used from `main.cpp`.
+- Step A (renderer): partially done — `Renderer` exists and is used from `main.cpp` (some headers/sources added).
 - Step B (camera): camera code is present; consider moving more input handling into `camera.*`.
 - Step C (gizmo_controller): implemented and working.
 - Step D (animator): not yet implemented.
 
 Notes:
-- After finishing the primitive generators and any cleanup (debug prints, selection box), run a full build and smoke test.
+- Primitive generators (cube, sphere, cylinder, plane) are implemented in `src/primitive_factory.*`.
+- After finishing any remaining cleanup (debug prints, selection box), run a full build and smoke test.
 - I can remove debug prints and make a cleanup commit; tell me if you want that done now.

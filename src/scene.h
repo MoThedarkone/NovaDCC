@@ -48,6 +48,9 @@ public:
     int getEntityCount() const { return (int)m_entities.size(); }
     int getSpawnCount() const { return m_spawnCount; }
 
+    // Allow external code to add a fully formed entity
+    int addEntity(SceneEntity&& ent);
+
     // Undo/Redo (simple command stack)
     void undo();
     void redo();

@@ -48,6 +48,37 @@ target_include_directories(NovaDCC PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# Add local Assimp install include dir (from manual build)
+target_include_directories(NovaDCC PRIVATE "${CMAKE_SOURCE_DIR}/external/assimp_install/include")
+# Prefer generated assimp build include (contains config.h) if present
+if(EXISTS "${CMAKE_SOURCE_DIR}/external/assimp_build/include")
+    target_include_directories(NovaDCC PRIVATE "${CMAKE_SOURCE_DIR}/external/assimp_build/include")
+endif()
+# (Do not add external/assimp_src include - prefer installed headers)
+
+# Link the manually built Assimp lib if present in common locations
+# Search for common lib filenames (debug/release variants) and link the first match.
+set(_assimp_lib_candidates
+    "${CMAKE_SOURCE_DIR}/external/assimp_install/lib/assimp*.lib"
+    "${CMAKE_SOURCE_DIR}/external/assimp_build/lib/Debug/assimp*.lib"
+    "${CMAKE_SOURCE_DIR}/external/assimp_build/lib/Release/assimp*.lib"
+    "${CMAKE_SOURCE_DIR}/external/assimp_build/bin/assimp*.lib"
+)
+set(_assimp_lib_found "")
+foreach(_pat IN LISTS _assimp_lib_candidates)
+    file(GLOB _matches LIST_DIRECTORIES false "${_pat}")
+    if(_matches)
+        list(GET _matches 0 _assimp_lib_found)
+        break()
+    endif()
+endforeach()
+if(_assimp_lib_found)
+    message(STATUS "Linking assimp library: ${_assimp_lib_found}")
+    target_link_libraries(NovaDCC PRIVATE "${_assimp_lib_found}")
+else()
+    message(WARNING "Assimp library not found in common locations. Continuing without linking assimp lib. If you need Assimp, install or point CMAKE_PREFIX_PATH.")
+endif()
+
 # Find OpenGL
 find_package(OpenGL REQUIRED)
 
@@ -56,6 +87,22 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/external/vcpkg")
     set(_repo_vcpkg_root "${CMAKE_SOURCE_DIR}/external/vcpkg")
 else()
     set(_repo_vcpkg_root "")
+endif()
+
+# Ensure a package vcpkg root and triplet are defined for fallback lookups
+if(NOT "${_repo_vcpkg_root}" STREQUAL "")
+    set(_pkg_vcpkg_root "${_repo_vcpkg_root}")
+elseif(DEFINED VCPKG_ROOT)
+    set(_pkg_vcpkg_root "${VCPKG_ROOT}")
+elseif(DEFINED ENV{VCPKG_ROOT})
+    set(_pkg_vcpkg_root "$ENV{VCPKG_ROOT}")
+else()
+    set(_pkg_vcpkg_root "${CMAKE_SOURCE_DIR}/external/vcpkg")
+endif()
+if(NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(_pkg_triplet "x86-windows")
+else()
+    set(_pkg_triplet "${VCPKG_TARGET_TRIPLET}")
 endif()
 
 # Try to find glad via package config; if it fails, fall back to vcpkg installed path
@@ -188,7 +235,7 @@ target_compile_definitions(NovaDCC PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLAD)
 if(EXISTS "${CMAKE_SOURCE_DIR}/external/imguizmo")
     message(STATUS "ImGuizmo detected in external/imguizmo; enabling USE_IMGUZMO")
     target_include_directories(NovaDCC PRIVATE "${CMAKE_SOURCE_DIR}/external/imguizmo")
-    target_compile_definitions(NovaDCC PRIVATE USE_IMGUZMO)
+    target_compile_definitions(NovaDCC PRIVATE USE_IMGUZO)
 endif()
 
 # Link against other vcpkg targets and OpenGL
@@ -201,6 +248,68 @@ endif()
 if(glm_FOUND)
     target_link_libraries(NovaDCC PRIVATE glm::glm)
 endif()
+
+# Find Assimp (via package config or vcpkg)
+find_package(assimp CONFIG QUIET)
+if(assimp_FOUND)
+    message(STATUS "Found assimp via package config")
+    target_link_libraries(NovaDCC PRIVATE assimp::assimp)
+else()
+    message(STATUS "assimp package config not found; using vcpkg-installed libs")
+    set(_assimp_inc "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/include")
+    set(_assimp_libdir "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/lib")
+    message(STATUS "Looking for assimp headers in ${_assimp_inc}")
+    if(EXISTS "${_assimp_inc}/assimp/scene.h")
+        target_include_directories(NovaDCC PRIVATE "${_assimp_inc}")
+        file(GLOB _assimp_libs "${_assimp_libdir}/assimp*.lib")
+        if(_assimp_libs)
+            message(STATUS "Linking assimp libs: ${_assimp_libs}")
+            target_link_libraries(NovaDCC PRIVATE ${_assimp_libs})
+        else()
+            message(WARNING "assimp libs not found in ${_assimp_libdir}. Continuing without assimp.")
+        endif()
+    else()
+        message(WARNING "assimp headers not found in ${_assimp_inc}. Continuing without assimp.")
+    endif()
+endif()
+
+# tinygltf (header-only) — prefer vcpkg-installed include; avoid FetchContent build failures
+set(_tiny_inc1 "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/include/tinygltf/tiny_gltf.h")
+set(_tiny_inc2 "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/include/tiny_gltf.h")
+if(EXISTS "${_tiny_inc1}")
+    target_include_directories(NovaDCC PRIVATE "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/include")
+    message(STATUS "Using tinygltf from vcpkg include")
+elseif(EXISTS "${_tiny_inc2}")
+    target_include_directories(NovaDCC PRIVATE "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/include")
+    message(STATUS "Using tinygltf from vcpkg include")
+else()
+    message(WARNING "tinygltf not found in vcpkg installed include. Skipping FetchContent to avoid build failures. If you need tinygltf, install via vcpkg or add it to external/.")
+endif()
+
+# If a local tinygltf include exists in external/, add it so real headers are used instead of stubs
+if(EXISTS "${CMAKE_SOURCE_DIR}/external/tinygltf/include")
+    target_include_directories(NovaDCC PRIVATE "${CMAKE_SOURCE_DIR}/external/tinygltf/include")
+endif()
+
+# tinyfiledialogs: prefer vcpkg-installed include, otherwise accept local external/ location
+if(EXISTS "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/include/tinyfiledialogs.h")
+    message(STATUS "Using tinyfiledialogs from vcpkg include")
+    target_include_directories(NovaDCC PRIVATE "${_pkg_vcpkg_root}/installed/${_pkg_triplet}/include")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/external/tinyfiledialogs/include/tinyfiledialogs.h")
+    message(STATUS "Using tinyfiledialogs from external/tinyfiledialogs/include")
+    target_include_directories(NovaDCC PRIVATE "${CMAKE_SOURCE_DIR}/external/tinyfiledialogs/include")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/external/tinyfiledialogs/tinyfiledialogs.h")
+    message(STATUS "Using tinyfiledialogs from external/tinyfiledialogs")
+    target_include_directories(NovaDCC PRIVATE "${CMAKE_SOURCE_DIR}/external/tinyfiledialogs")
+else()
+    message(WARNING "tinyfiledialogs header not found. If you need tinyfiledialogs, install via vcpkg or add it to external/tinyfiledialogs.")
+endif()
+
+# Ensure include dirs are present for the compiler (add both possible local locations)
+target_include_directories(NovaDCC PRIVATE
+    "${CMAKE_SOURCE_DIR}/external/tinyfiledialogs/include"
+    "${CMAKE_SOURCE_DIR}/external/tinyfiledialogs"
+)
 
 target_link_libraries(NovaDCC
     PRIVATE
