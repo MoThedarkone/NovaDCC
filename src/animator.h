@@ -27,10 +27,23 @@ public:
     bool saveToFile(const std::string& path) const;
     bool loadFromFile(const std::string& path);
 
-private:
+    // Public view for UI: lightweight read-only info
     enum class Type { Rotation = 0, Translate = 1, Scale = 2 };
+    struct AnimInfo {
+        int id = 0;
+        int entityId = 0;
+        Type type = Type::Rotation;
+        glm::vec3 axis = glm::vec3(0.0f, 1.0f, 0.0f); // rotation
+        float speedDeg = 0.0f; // rotation speed
+        glm::vec3 velocity = glm::vec3(0.0f); // translate
+        glm::vec3 scaleDelta = glm::vec3(0.0f); // scale
+    };
 
-    struct Anim {
+    std::vector<AnimInfo> getAnimations() const;
+    bool updateAnimation(int animId, const AnimInfo& info);
+
+private:
+    struct AnimInternal {
         int id = 0; // animation id
         int entityId = 0;
         Type type = Type::Rotation;
@@ -43,7 +56,7 @@ private:
         glm::vec3 scaleDelta = glm::vec3(0.0f);
     };
 
-    std::vector<Anim> anims_;
+    std::vector<AnimInternal> anims_;
     int nextAnimId_ = 1;
 };
 

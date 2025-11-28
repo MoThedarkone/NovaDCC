@@ -10,7 +10,7 @@ Animator g_animator;
 void Animator::update(Scene& scene, float dt) {
     if(anims_.empty()) return;
     for(const auto& a : anims_) {
-        SceneEntity* e = scene.findById(a.entityId);
+        SceneEntity* e = scene.findById(a.id == 0 ? 0 : a.entityId);
         if(!e) continue;
         switch(a.type) {
             case Type::Rotation: {
@@ -34,34 +34,41 @@ void Animator::update(Scene& scene, float dt) {
     }
 }
 
+static Animator::Type internalTypeFromTag(const std::string& tag) {
+    if(tag == "ROT") return Animator::Type::Rotation;
+    if(tag == "TRN") return Animator::Type::Translate;
+    if(tag == "SCL") return Animator::Type::Scale;
+    return Animator::Type::Rotation;
+}
+
 int Animator::addRotationAnimation(int entityId, const glm::vec3& axis, float degreesPerSec) {
-    Anim a; a.id = nextAnimId_++; a.entityId = entityId; a.type = Type::Rotation; a.axis = axis; a.speedDeg = degreesPerSec;
+    AnimInternal a; a.id = nextAnimId_++; a.entityId = entityId; a.type = Type::Rotation; a.axis = axis; a.speedDeg = degreesPerSec;
     anims_.push_back(a);
     LOG_INFO("Added rotation anim id=" << a.id << " ent=" << entityId << " spd=" << degreesPerSec);
     return a.id;
 }
 
 int Animator::addTranslateAnimation(int entityId, const glm::vec3& velocityUnitsPerSec) {
-    Anim a; a.id = nextAnimId_++; a.entityId = entityId; a.type = Type::Translate; a.velocity = velocityUnitsPerSec;
+    AnimInternal a; a.id = nextAnimId_++; a.entityId = entityId; a.type = Type::Translate; a.velocity = velocityUnitsPerSec;
     anims_.push_back(a);
     LOG_INFO("Added translate anim id=" << a.id << " ent=" << entityId << " vel=" << velocityUnitsPerSec.x << "," << velocityUnitsPerSec.y << "," << velocityUnitsPerSec.z);
     return a.id;
 }
 
 int Animator::addScaleAnimation(int entityId, const glm::vec3& scaleDeltaPerSec) {
-    Anim a; a.id = nextAnimId_++; a.entityId = entityId; a.type = Type::Scale; a.scaleDelta = scaleDeltaPerSec;
+    AnimInternal a; a.id = nextAnimId_++; a.entityId = entityId; a.type = Type::Scale; a.scaleDelta = scaleDeltaPerSec;
     anims_.push_back(a);
     LOG_INFO("Added scale anim id=" << a.id << " ent=" << entityId << " delta=" << scaleDeltaPerSec.x << "," << scaleDeltaPerSec.y << "," << scaleDeltaPerSec.z);
     return a.id;
 }
 
 void Animator::removeAnimation(int animId) {
-    auto it = std::remove_if(anims_.begin(), anims_.end(), [animId](const Anim& a){ return a.id == animId; });
+    auto it = std::remove_if(anims_.begin(), anims_.end(), [animId](const AnimInternal& a){ return a.id == animId; });
     if(it != anims_.end()) { anims_.erase(it, anims_.end()); LOG_INFO("Removed anim id=" << animId); }
 }
 
 void Animator::removeAnimationsForEntity(int entityId) {
-    auto it = std::remove_if(anims_.begin(), anims_.end(), [entityId](const Anim& a){ return a.entityId == entityId; });
+    auto it = std::remove_if(anims_.begin(), anims_.end(), [entityId](const AnimInternal& a){ return a.entityId == entityId; });
     if(it != anims_.end()) { anims_.erase(it, anims_.end()); LOG_INFO("Removed animations for entity=" << entityId); }
 }
 
@@ -90,25 +97,45 @@ bool Animator::loadFromFile(const std::string& path) {
     anims_.clear();
     std::string tag;
     while(f >> tag) {
-        if(tag == "ROT") {
-            Anim a; f >> a.id >> a.entityId >> a.axis.x >> a.axis.y >> a.axis.z >> a.speedDeg;
-            a.type = Type::Rotation;
-            anims_.push_back(a);
-            nextAnimId_ = std::max(nextAnimId_, a.id + 1);
-        } else if(tag == "TRN") {
-            Anim a; f >> a.id >> a.entityId >> a.velocity.x >> a.velocity.y >> a.velocity.z;
-            a.type = Type::Translate;
-            anims_.push_back(a);
-            nextAnimId_ = std::max(nextAnimId_, a.id + 1);
-        } else if(tag == "SCL") {
-            Anim a; f >> a.id >> a.entityId >> a.scaleDelta.x >> a.scaleDelta.y >> a.scaleDelta.z;
-            a.type = Type::Scale;
-            anims_.push_back(a);
-            nextAnimId_ = std::max(nextAnimId_, a.id + 1);
+        Animator::Type t = internalTypeFromTag(tag);
+        if(t == Type::Rotation) {
+            AnimInternal a; f >> a.id >> a.entityId >> a.axis.x >> a.axis.y >> a.axis.z >> a.speedDeg; a.type = Type::Rotation; anims_.push_back(a); nextAnimId_ = std::max(nextAnimId_, a.id + 1);
+        } else if(t == Type::Translate) {
+            AnimInternal a; f >> a.id >> a.entityId >> a.velocity.x >> a.velocity.y >> a.velocity.z; a.type = Type::Translate; anims_.push_back(a); nextAnimId_ = std::max(nextAnimId_, a.id + 1);
+        } else if(t == Type::Scale) {
+            AnimInternal a; f >> a.id >> a.entityId >> a.scaleDelta.x >> a.scaleDelta.y >> a.scaleDelta.z; a.type = Type::Scale; anims_.push_back(a); nextAnimId_ = std::max(nextAnimId_, a.id + 1);
         } else {
             std::string line; std::getline(f, line);
         }
     }
     LOG_INFO("Loaded animations from " << path << ", count=" << anims_.size());
     return true;
+}
+
+std::vector<Animator::AnimInfo> Animator::getAnimations() const {
+    std::vector<AnimInfo> out;
+    out.reserve(anims_.size());
+    for(const auto& a : anims_) {
+        AnimInfo ai;
+        ai.id = a.id; ai.entityId = a.entityId; ai.type = a.type;
+        ai.axis = a.axis; ai.speedDeg = a.speedDeg; ai.velocity = a.velocity; ai.scaleDelta = a.scaleDelta;
+        out.push_back(ai);
+    }
+    return out;
+}
+
+bool Animator::updateAnimation(int animId, const AnimInfo& info) {
+    for(auto& a : anims_) {
+        if(a.id == animId) {
+            a.entityId = info.entityId;
+            a.type = info.type;
+            a.axis = info.axis;
+            a.speedDeg = info.speedDeg;
+            a.velocity = info.velocity;
+            a.scaleDelta = info.scaleDelta;
+            LOG_INFO("Updated anim id=" << animId);
+            return true;
+        }
+    }
+    return false;
 }

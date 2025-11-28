@@ -14,6 +14,8 @@ MeshGL::~MeshGL() {
 MeshGL::MeshGL(MeshGL&& other) noexcept {
     vao = other.vao; vbo = other.vbo; ebo = other.ebo; indexCount = other.indexCount;
     aabbMin = other.aabbMin; aabbMax = other.aabbMax;
+    cpuPositions = std::move(other.cpuPositions);
+    cpuIndices = std::move(other.cpuIndices);
     other.vao = other.vbo = other.ebo = 0; other.indexCount = 0;
 }
 
@@ -24,6 +26,8 @@ MeshGL& MeshGL::operator=(MeshGL&& other) noexcept {
         if (vao) { glDeleteVertexArrays(1, &vao); }
         vao = other.vao; vbo = other.vbo; ebo = other.ebo; indexCount = other.indexCount;
         aabbMin = other.aabbMin; aabbMax = other.aabbMax;
+        cpuPositions = std::move(other.cpuPositions);
+        cpuIndices = std::move(other.cpuIndices);
         other.vao = other.vbo = other.ebo = 0; other.indexCount = 0;
     }
     return *this;
@@ -31,12 +35,15 @@ MeshGL& MeshGL::operator=(MeshGL&& other) noexcept {
 
 void MeshGL::upload(const std::vector<float>& verts, const std::vector<unsigned int>& idx) {
     // compute AABB from vertex positions (assume verts.size() % 3 == 0)
+    cpuPositions.clear(); cpuIndices.clear();
     if(!verts.empty()){
         glm::vec3 mn(verts[0], verts[1], verts[2]);
         glm::vec3 mx = mn;
         size_t vcount = verts.size()/3;
+        cpuPositions.reserve(vcount);
         for(size_t i=0;i<vcount;++i){
             glm::vec3 p(verts[i*3+0], verts[i*3+1], verts[i*3+2]);
+            cpuPositions.push_back(p);
             mn.x = std::min(mn.x, p.x); mn.y = std::min(mn.y, p.y); mn.z = std::min(mn.z, p.z);
             mx.x = std::max(mx.x, p.x); mx.y = std::max(mx.y, p.y); mx.z = std::max(mx.z, p.z);
         }
@@ -44,6 +51,8 @@ void MeshGL::upload(const std::vector<float>& verts, const std::vector<unsigned 
     } else {
         aabbMin = glm::vec3(-1.0f); aabbMax = glm::vec3(1.0f);
     }
+
+    cpuIndices = idx; // copy indices
 
     if (vao == 0) glGenVertexArrays(1, &vao);
     if (vbo == 0) glGenBuffers(1, &vbo);

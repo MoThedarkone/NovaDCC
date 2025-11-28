@@ -19,6 +19,10 @@ struct MeshGL {
     glm::vec3 aabbMin = glm::vec3(-1.0f);
     glm::vec3 aabbMax = glm::vec3(1.0f);
 
+    // Keep CPU-side copies for operations like ray-mesh intersection
+    std::vector<glm::vec3> cpuPositions;
+    std::vector<unsigned int> cpuIndices;
+
     MeshGL() = default;
     ~MeshGL();
 

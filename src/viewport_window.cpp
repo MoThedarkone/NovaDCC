@@ -2,11 +2,14 @@
 #include "renderer.h"
 #include "gizmo_controller.h"
 #include "gizmo_lib.h"
+#include "primitive_factory.h"
 #include <glad/glad.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/quaternion.hpp>
+#include <cfloat>
 #include <iostream>
 
 // Local FBO state (kept internal to this module)
@@ -15,6 +18,9 @@ static GLuint s_fboColor = 0;
 static GLuint s_fboDepth = 0;
 static int s_fbo_w = 0;
 static int s_fbo_h = 0;
+
+// Extern spawn placement mode
+SpawnPlacementMode g_spawnPlacementMode = SpawnPlacementMode::Origin;
 
 static void ensureFBO(int w, int h) {
     if(w <= 0 || h <= 0) return;
@@ -45,6 +51,85 @@ static void ensureFBO(int w, int h) {
         s_fbo_w = s_fbo_h = 0;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// Helper: unproject screen point to world ray (origin, dir)
+static void screenPointToRay(const glm::vec2& screenPos, const ImVec2& vp_pos, const ImVec2& vp_size, const glm::mat4& view, const glm::mat4& proj, glm::vec3& outOrigin, glm::vec3& outDir) {
+    // NDC
+    float x = (screenPos.x - vp_pos.x) / vp_size.x * 2.0f - 1.0f;
+    float y = 1.0f - (screenPos.y - vp_pos.y) / vp_size.y * 2.0f;
+    glm::vec4 nearPoint = glm::vec4(x, y, -1.0f, 1.0f);
+    glm::vec4 farPoint = glm::vec4(x, y, 1.0f, 1.0f);
+    glm::mat4 inv = glm::inverse(proj * view);
+    glm::vec4 nearWorld = inv * nearPoint; nearWorld /= nearWorld.w;
+    glm::vec4 farWorld = inv * farPoint; farWorld /= farWorld.w;
+    outOrigin = glm::vec3(nearWorld);
+    outDir = glm::normalize(glm::vec3(farWorld - nearWorld));
+}
+
+// Helper: intersect ray with plane y = planeY. returns true if hit and sets outPoint
+static bool intersectRayPlane(const glm::vec3& origin, const glm::vec3& dir, float planeY, glm::vec3& outPoint) {
+    if(fabs(dir.y) < 1e-6f) return false;
+    float t = (planeY - origin.y) / dir.y;
+    if(t < 0.0f) return false;
+    outPoint = origin + dir * t;
+    return true;
+}
+
+// Moller-Trumbore ray-triangle intersection
+static bool rayIntersectsTriangle(const glm::vec3& orig, const glm::vec3& dir, const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, float& outT, float& outU, float& outV) {
+    const float EPSILON = 1e-8f;
+    glm::vec3 edge1 = v1 - v0;
+    glm::vec3 edge2 = v2 - v0;
+    glm::vec3 h = glm::cross(dir, edge2);
+    float a = glm::dot(edge1, h);
+    if (a > -EPSILON && a < EPSILON) return false; // parallel
+    float f = 1.0f / a;
+    glm::vec3 s = orig - v0;
+    float u = f * glm::dot(s, h);
+    if (u < 0.0f || u > 1.0f) return false;
+    glm::vec3 q = glm::cross(s, edge1);
+    float v = f * glm::dot(dir, q);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    float t = f * glm::dot(edge2, q);
+    if (t > EPSILON) {
+        outT = t; outU = u; outV = v; return true;
+    }
+    return false;
+}
+
+// Find closest intersection of ray with all entities' meshes; returns true if hit and sets outPoint and hitEntityId
+static bool rayIntersectSceneMeshes(Scene& scene, const glm::vec3& origin, const glm::vec3& dir, glm::vec3& outPoint, int& hitEntityId) {
+    float bestT = FLT_MAX;
+    bool hitAny = false;
+    for(const auto& ent : scene.entities()) {
+        if(!ent.mesh) continue;
+        if(ent.mesh->cpuPositions.empty() || ent.mesh->cpuIndices.empty()) continue;
+        // transform mesh vertex positions to world space using entity transform
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, ent.position);
+        glm::quat q = glm::quat(glm::radians(ent.rotation));
+        model *= glm::toMat4(q);
+        model = glm::scale(model, ent.scale);
+        // check AABB first in world space (compute world AABB corners)
+        glm::vec4 mn4 = model * glm::vec4(ent.mesh->aabbMin, 1.0f);
+        glm::vec4 mx4 = model * glm::vec4(ent.mesh->aabbMax, 1.0f);
+        glm::vec3 mn = glm::vec3(mn4);
+        glm::vec3 mx = glm::vec3(mx4);
+        // quick AABB ray reject could be added here
+        const auto& pos = ent.mesh->cpuPositions;
+        const auto& idx = ent.mesh->cpuIndices;
+        for(size_t i=0;i+2<idx.size(); i+=3) {
+            glm::vec3 v0 = glm::vec3(model * glm::vec4(pos[idx[i+0]], 1.0f));
+            glm::vec3 v1 = glm::vec3(model * glm::vec4(pos[idx[i+1]], 1.0f));
+            glm::vec3 v2 = glm::vec3(model * glm::vec4(pos[idx[i+2]], 1.0f));
+            float t,u,v;
+            if(rayIntersectsTriangle(origin, dir, v0, v1, v2, t, u, v)) {
+                if(t < bestT) { bestT = t; outPoint = origin + dir * t; hitEntityId = ent.id; hitAny = true; }
+            }
+        }
+    }
+    return hitAny;
 }
 
 void DrawViewportWindow(ViewportContext& ctx) {
@@ -80,24 +165,57 @@ void DrawViewportWindow(ViewportContext& ctx) {
         Renderer::renderGrid(vp);
         ctx.scene->drawAll(*ctx.prog, vp);
 
-        // Spawn at origin when requested
+        // Spawn when requested
         if(ctx.spawnPending && *ctx.spawnPending) {
-            // spawn exactly at world origin
-            glm::vec3 pos(0.0f, 0.0f, 0.0f);
-            ctx.scene->addPrimitive(*ctx.spawnType, pos);
-            *ctx.spawnPending = false;
+            glm::vec3 spawnPos(0.0f);
+            if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
+                spawnPos = glm::vec3(0.0f);
+            } else if(g_spawnPlacementMode == SpawnPlacementMode::ClickPlane) {
+                // Wait for user click inside viewport
+                if(mouseOnViewport && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    ImVec2 m = ImGui::GetIO().MousePos; // actual click position
+                    glm::vec2 sp = glm::vec2(m.x, m.y);
+                    glm::vec3 rayOrigin, rayDir;
+                    screenPointToRay(sp, viewport_pos, viewport_size, view, proj, rayOrigin, rayDir);
+                    glm::vec3 hit;
+                    if(intersectRayPlane(rayOrigin, rayDir, 0.0f, hit)) spawnPos = hit; else spawnPos = glm::vec3(0.0f);
+                    *ctx.spawnPending = false;
+                } else {
+                    // not clicked yet; wait
+                }
+            } else if(g_spawnPlacementMode == SpawnPlacementMode::ClickMesh) {
+                if(mouseOnViewport && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    ImVec2 m = ImGui::GetIO().MousePos;
+                    glm::vec2 sp = glm::vec2(m.x, m.y);
+                    glm::vec3 rayOrigin, rayDir;
+                    screenPointToRay(sp, viewport_pos, viewport_size, view, proj, rayOrigin, rayDir);
+                    glm::vec3 hit;
+                    int hitEnt = 0;
+                    if(rayIntersectSceneMeshes(*ctx.scene, rayOrigin, rayDir, hit, hitEnt)) {
+                        spawnPos = hit;
+                    } else spawnPos = glm::vec3(0.0f);
+                    *ctx.spawnPending = false;
+                } else {
+                    // wait for click
+                }
+            }
+            // Only add if spawnPending was cleared (i.e., we had a click) or Origin mode
+            if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
+                ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
+                *ctx.spawnPending = false;
+            } else if(!*ctx.spawnPending) {
+                ctx.scene->addPrimitive(*ctx.spawnType, spawnPos);
+            }
         }
 
         // ImGuizmo manipulation
         if(*ctx.useImGuizmo && ctx.scene->getSelectedId() != 0) {
-            // GizmoController::manipulate signature: (Scene&, const glm::mat4&, const glm::mat4&, const ImVec2&, const ImVec2&, ImGuizmo::OPERATION, ImGuizmo::MODE, bool)
             bool active = GizmoController::manipulate(*ctx.scene, view, proj, viewport_pos, viewport_size, *ctx.gizmoOperation, *ctx.gizmoMode, *ctx.useImGuizmo);
             if(active) {
                 if(!*ctx.imguizmoActive) { *ctx.imguizmoActive = true; *ctx.imguizmoEntity = ctx.scene->getSelectedId(); *ctx.imguizmoBefore = ctx.scene->getEntityTransform(*ctx.imguizmoEntity); }
             } else {
                 if(*ctx.imguizmoActive) {
                     Scene::Transform after = ctx.scene->getEntityTransform(*ctx.imguizmoEntity);
-                    // only push if something actually changed
                     const Scene::Transform& before = *ctx.imguizmoBefore;
                     if(after.position != before.position || after.rotation != before.rotation || after.scale != before.scale) {
                         ctx.scene->pushCommand(std::unique_ptr<Scene::Command>(new Scene::TransformCommand(*ctx.imguizmoEntity, *ctx.imguizmoBefore, after)));
@@ -113,7 +231,6 @@ void DrawViewportWindow(ViewportContext& ctx) {
         SceneEntity* sel = ctx.scene->findById(ctx.scene->getSelectedId());
         if(sel && (*ctx.gizmoOperation == ImGuizmo::ROTATE || *ctx.gizmoOperation == ImGuizmo::SCALE)) {
             Renderer::drawSelectionBox(vp, sel);
-            // overlays -> use GizmoLib
             GizmoLib::DrawAxisOverlay(sel, view, proj, viewport_pos, viewport_size);
             if(*ctx.gizmoOperation == ImGuizmo::ROTATE) GizmoLib::DrawRotationArcs(*ctx.scene, sel->id, view, proj, viewport_pos, viewport_size, *ctx.gizmoMode);
         }

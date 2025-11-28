@@ -1,6 +1,7 @@
 #include "tools_window.h"
 #include "gizmo_controller.h"
 #include "animator.h"
+#include "viewport_window.h"
 #include <cstring>
 #include <functional>
 
@@ -29,28 +30,61 @@ void DrawToolsWindow(Scene& scene,
 
     ImGui::Text("Primitives");
     ImGui::Checkbox("Record spawn only", &recordOnly);
+
+    // Spawn placement mode selector
+    const char* modes[] = { "Origin", "Click Plane (y=0)", "Click Mesh (placeholder)" };
+    int modeIdx = (int)g_spawnPlacementMode;
+    if(ImGui::Combo("Spawn Mode", &modeIdx, modes, IM_ARRAYSIZE(modes))) {
+        g_spawnPlacementMode = (SpawnPlacementMode)modeIdx;
+    }
+
     if(ImGui::Button("Cube")) {
         spawnType = primitives::PrimitiveType::Cube;
         if(recordOnly) scene.recordSpawnOnly();
-        else { ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true; }
+        else {
+            if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
+                ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true;
+            } else {
+                // arm spawn; user must click in viewport to place
+                spawnPending = true;
+            }
+        }
     }
     ImGui::SameLine();
     if(ImGui::Button("Sphere")) {
         spawnType = primitives::PrimitiveType::Sphere;
         if(recordOnly) scene.recordSpawnOnly();
-        else { ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true; }
+        else {
+            if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
+                ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true;
+            } else {
+                spawnPending = true;
+            }
+        }
     }
     ImGui::SameLine();
     if(ImGui::Button("Cylinder")) {
         spawnType = primitives::PrimitiveType::Cylinder;
         if(recordOnly) scene.recordSpawnOnly();
-        else { ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true; }
+        else {
+            if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
+                ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true;
+            } else {
+                spawnPending = true;
+            }
+        }
     }
     ImGui::SameLine();
     if(ImGui::Button("Plane")) {
         spawnType = primitives::PrimitiveType::Plane;
         if(recordOnly) scene.recordSpawnOnly();
-        else { ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true; }
+        else {
+            if(g_spawnPlacementMode == SpawnPlacementMode::Origin) {
+                ImGuiIO& io = ImGui::GetIO(); spawnMousePos = glm::vec2(io.MousePos.x, io.MousePos.y); spawnPending = true;
+            } else {
+                spawnPending = true;
+            }
+        }
     }
     ImGui::SameLine();
     if(ImGui::Button("Delete")) { scene.deleteSelected(); }
@@ -115,6 +149,35 @@ void DrawToolsWindow(Scene& scene,
     ImGui::Checkbox("Use fixed animator timestep", &g_useFixedTimestep);
     ImGui::SameLine();
     ImGui::DragFloat("Fixed timestep (s)", &g_fixedTimestep, 0.001f, 0.001f, 0.5f);
+
+    ImGui::Separator();
+    ImGui::Text("Active animations");
+
+    // list active animations
+    auto anims = g_animator.getAnimations();
+    for(const auto& a : anims) {
+        ImGui::PushID(a.id);
+        ImGui::Text("ID %d Entity %d", a.id, a.entityId);
+        if(a.type == Animator::Type::Rotation) {
+            ImGui::Text("Type: Rotation");
+            glm::vec3 axis = a.axis; float spd = a.speedDeg;
+            if(ImGui::DragFloat3("Axis", &axis.x, 0.01f) | ImGui::DragFloat("Speed", &spd, 0.1f)) {
+                Animator::AnimInfo info = a; info.axis = axis; info.speedDeg = spd; g_animator.updateAnimation(a.id, info);
+            }
+        } else if(a.type == Animator::Type::Translate) {
+            ImGui::Text("Type: Translate");
+            glm::vec3 vel = a.velocity;
+            if(ImGui::DragFloat3("Velocity", &vel.x, 0.01f)) { Animator::AnimInfo info = a; info.velocity = vel; g_animator.updateAnimation(a.id, info); }
+        } else if(a.type == Animator::Type::Scale) {
+            ImGui::Text("Type: Scale");
+            glm::vec3 sd = a.scaleDelta;
+            if(ImGui::DragFloat3("Scale delta", &sd.x, 0.01f)) { Animator::AnimInfo info = a; info.scaleDelta = sd; g_animator.updateAnimation(a.id, info); }
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Remove")) { g_animator.removeAnimation(a.id); }
+        ImGui::PopID();
+        ImGui::Separator();
+    }
 
     if(showToolOptions) {
         ImGui::Text("Gizmo");
